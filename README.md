@@ -1,150 +1,96 @@
-# 📈 Stock Market Analysis & Prediction Tool
+# Stock Market Analysis & Prediction Tool
 
-A **pure Python** data science project that fetches live NSE (Indian stock market) data,
-computes technical indicators, trains ML models, and displays an interactive dashboard.
+A pure-Python data science project that predicts the **next trading day's closing price** for NSE (Indian market) stocks using machine learning on historical data.
 
-Built as a portfolio project for data science / ML interviews.
+## 🚀 Live Demo
 
----
+**👉 [Open the app](https://stock-predictor-python-juipuglwqubpvlatzptjbh.streamlit.app/)**
+
+Hosted on Streamlit Community Cloud. If the app has been idle, it may take a few seconds to wake up.
 
 ## ✨ Features
 
-| Feature | Details |
-|---|---|
-| Live data | Yahoo Finance via `yfinance` — any NSE stock (`.NS` suffix) |
-| Technical indicators | SMA20, SMA50, EMA20, RSI (14-day) |
-| ML models | Linear Regression and Random Forest — trained and compared side by side |
-| Naive baseline | Always compared against "tomorrow = today's close" |
-| Metrics | RMSE, MAE, R² on a held-out time-ordered test set |
-| Prediction range | Predicted price ± RMSE (honest uncertainty estimate) |
-| Interactive UI | Streamlit multi-page app with Plotly charts |
-| Watchlist | Save favourite stocks to a local JSON file |
-| Model info page | Feature importance chart, comparison table, honest disclaimer |
-
----
+- **Dashboard**: search any NSE stock (e.g. `TCS.NS`), view the Actual vs Predicted chart with SMA20 and SMA50 overlays, and see the next-day prediction.
+- **Watchlist**: save favourite stocks and open their charts without re-typing the symbol.
+- **Model Info**: see how the model was trained and how it compares against a naive baseline (metrics are read from `ml_service/metrics.json`).
 
 ## 🛠️ Tech Stack
 
-| Layer | Library |
-|---|---|
-| UI | [Streamlit](https://streamlit.io/) |
-| Charts | [Plotly](https://plotly.com/python/) |
-| Data | [yfinance](https://github.com/ranaroussi/yfinance), [pandas](https://pandas.pydata.org/) |
-| ML | [scikit-learn](https://scikit-learn.org/) |
-| Model storage | [joblib](https://joblib.readthedocs.io/) |
-| Numerics | [numpy](https://numpy.org/) |
+| Area | Tools |
+|------|-------|
+| UI | Streamlit |
+| Charts | Plotly |
+| Data | yfinance, pandas, numpy |
+| ML | scikit-learn (Linear Regression, Random Forest), joblib |
 
----
+## 🤖 How the Model Works
 
-## 📁 Folder Structure
+1. Historical daily data is downloaded with `yfinance`.
+2. Technical indicators are computed as features (SMA20, SMA50, EMA20, RSI).
+3. Target: the **next day's Close price**.
+4. **Time-ordered 80/20 train/test split** (no shuffling, so the model never trains on the future).
+5. Models are compared against a **naive baseline** (tomorrow = today) using the same test period:
+   - Naive baseline
+   - Linear Regression
+   - Random Forest
+6. Metrics are saved to `ml_service/metrics.json` and shown on the Model Info page.
+
+## ⚠️ Limitations
+
+- Stock prices are very hard to predict. This is a learning project, **not financial advice**.
+- The model was trained on `RELIANCE.NS` data. Predictions for other stocks reuse the same model, so treat them as approximate directional signals, not exact prices.
+- The watchlist is stored in `data/watchlist.json`. On Streamlit Cloud the file system is not permanent, so the watchlist can reset when the app restarts.
+- Live data comes from Yahoo Finance and can occasionally be slow or rate-limited.
+
+## 📁 Project Structure
 
 ```
 stock-predictor-python/
-│
-├── app.py                          # Streamlit home page (run this to start)
-│
-├── ml_service/                     # All ML logic — fetch, indicators, train, predict
-│   ├── config.py                   # SINGLE SOURCE OF TRUTH: features list + file paths
-│   ├── stock_utils.py              # Core pipeline: fetch → indicators → predict
-│   ├── train_model.py              # Training script: Naive / LR / RF comparison
-│   ├── compute_indicators.py       # SMA20, SMA50, EMA20, RSI calculations
-│   ├── fetch_data.py               # yfinance download wrapper
-│   ├── linear_regression_model.pkl # Original LR model (4 features, kept as backup)
-│   ├── linear_regression_model_v2.pkl  # New LR model (5 features, with RSI)
-│   ├── random_forest_model.pkl     # Random Forest model (5 features, with RSI)
-│   └── metrics.json                # RMSE/MAE/R² for all models (written by train_model.py)
-│
-├── pages/                          # Streamlit auto-discovers these as sidebar pages
-│   ├── 1_Dashboard.py              # Stock search, chart, prediction, watchlist button
-│   ├── 2_Watchlist.py              # Saved stocks with inline charts
-│   └── 3_Model_Info.py             # Model comparison table + feature importance chart
-│
+├── app.py                 # Home page
+├── pages/
+│   ├── 1_Dashboard.py     # Search + chart + prediction
+│   ├── 2_Watchlist.py     # Saved stocks
+│   └── 3_Model_Info.py    # Model details and metrics
+├── ml_service/            # Training code, saved model, metrics.json
 ├── utils/
-│   ├── watchlist.py                # load_watchlist() / save_watchlist() using JSON
-│   └── chart_helpers.py            # build_chart() — Plotly 4-line chart builder
-│
+│   ├── watchlist.py       # Watchlist read/write helpers
+│   └── chart_helpers.py   # Plotly chart builders
 ├── data/
-│   └── watchlist.json              # Persisted list of saved stock symbols
-│
-├── requirements.txt                # Python dependencies
-├── README.md                       # This file
-└── INTERVIEW_NOTES.md              # 12 likely interview Q&A about this project
+│   └── watchlist.json
+├── requirements.txt
+├── README.md
+└── INTERVIEW_NOTES.md
 ```
 
----
-
-## 🚀 How to Run
-
-### Prerequisites
-- Python 3.9 or higher
-- Internet connection (for live stock data from Yahoo Finance)
-
-### Step-by-step
+## 💻 Run Locally
 
 ```bash
-# 1. Navigate into the project folder
-cd "stock-predictor-python"
+# 1. Clone the repo
+git clone https://github.com/shivkumarbarpete-byte/stock-predictor-python.git
+cd stock-predictor-python
 
-# 2. Create a virtual environment
+# 2. Create and activate a virtual environment (Python 3.11 recommended)
 python -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # macOS / Linux
 
-# 3. Activate it (Windows PowerShell)
-.\venv\Scripts\Activate.ps1
-
-# 4. Install dependencies
+# 3. Install dependencies
 pip install -r requirements.txt
 
-# 5. Copy the original model file into the ml_service folder (first time only)
-Copy-Item "ml-service\linear_regression_model.pkl" "ml_service\linear_regression_model.pkl"
-
-# 6. Train the new models (LR v2 + Random Forest) and generate metrics.json
-python ml_service/train_model.py
-
-# 7. Launch the Streamlit app
+# 4. Run the app
 streamlit run app.py
 ```
 
-The app opens automatically at **http://localhost:8501**
+## 🌐 Deployment Notes
 
-> **Note:** Step 6 fetches ~2 years of RELIANCE.NS data, trains two models,
-> and saves `linear_regression_model_v2.pkl`, `random_forest_model.pkl`, and `metrics.json`
-> inside `ml_service/`. This takes ~30–60 seconds on first run.
+- Deployed on Streamlit Community Cloud with **Python 3.11**.
+- `requirements.txt` pins `pandas`, `scikit-learn` and `joblib`, and keeps `numpy<2`, so the saved model loads with the same library versions it was trained with.
 
----
+## 👤 Author
 
-## 📸 Screenshots
-
-> _[Add a screenshot of the Dashboard page here]_
-
-> _[Add a screenshot of the Model Info page here]_
+**Shiv Kumar Barpete**
+GitHub: [shivkumarbarpete-byte](https://github.com/shivkumarbarpete-byte)
 
 ---
 
-## 📝 Key Design Decisions
-
-### Why time-ordered train/test split (no shuffling)?
-Stock data is sequential. Shuffling would let the model see "future" prices during
-training — a classic mistake called **data leakage**. We always use the oldest 80%
-for training and the newest 20% for testing.
-
-### Why a naive baseline?
-Before claiming an ML model is "good", you must prove it beats the simplest possible guess.
-Here, the naive baseline is: "tomorrow's price = today's close". If our ML model
-barely beats this, it hasn't learned anything useful.
-
-### Why three metrics?
-- **RMSE** — penalises large errors more heavily (important in finance)
-- **MAE** — average error in plain rupees (easy to explain to anyone)
-- **R²** — shows what % of price variation the model can explain
-
-### Why RSI as a feature?
-RSI (Relative Strength Index) is a momentum indicator widely used in technical analysis.
-Adding it means the model has information about whether a stock is potentially overbought
-or oversold — a domain-knowledge feature that goes beyond pure price history.
-
----
-
-## ⚠️ Disclaimer
-
-This tool is for **learning and portfolio demonstration only**.
-It is not financial advice and should not be used to make real investment decisions.
+*Related: a MERN-stack version of this project (React + Express + MongoDB + FastAPI ML service) is maintained separately.*
