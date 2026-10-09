@@ -1,0 +1,43 @@
+{
+  "trained_on": "RELIANCE.NS",
+  "train_date": "2026-10-09",
+  "features": [
+    "Close",
+    "SMA20",
+    "SMA50",
+    "EMA20",
+    "RSI"
+  ],
+  "train_rows": 356,
+  "test_rows": 89,
+  "models": [
+    {
+      "name": "Naive Baseline",
+      "key": "naive",
+      "rmse": 15.1756,
+      "mae": 12.0406,
+      "r2": 0.680666
+    },
+    {
+      "name": "Linear Regression",
+      "key": "lr",
+      "rmse": 15.5395,
+      "mae": 12.457,
+      "r2": 0.665168
+    },
+    {
+      "name": "Random Forest",
+      "key": "rf",
+      "rmse": 19.1966,
+      "mae": 15.6375,
+      "r2": 0.489027
+    }
+  ],
+  "feature_importances": {
+    "Close": 0.974899,
+    "SMA20": 0.005299,
+    "SMA50": 0.007002,
+    "EMA20": 0.005429,
+    "RSI": 0.007372
+  }
+}
