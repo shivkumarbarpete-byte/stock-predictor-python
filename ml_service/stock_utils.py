@@ -1,19 +1,19 @@
 """
 ml_service/stock_utils.py
 --------------------------
-All reusable ML logic — Streamlit pages import from here.
+All reusable ML logic - Streamlit pages import from here.
 
 Five things this file does:
   1. fetch_stock_data()             -> download price history from Yahoo Finance
-  2. add_indicators()               -> compute SMA20, SMA50, EMA20, RSI
+  2. add_indicators()               -> compute SMA20, SMA50, EMA20, RSI + scale-free ratios
   3. load_model(model_name)         -> load a saved .pkl model from disk
   4. predict_next_close(symbol, model_name) -> full pipeline, returns a prediction dict
   5. get_history_with_predictions() -> actual + predicted prices for the chart
 
-IMPORTANT — Feature list:
-  FEATURES is imported from ml_service/config.py.
-  train_model.py also imports it from the same place.
-  This guarantees training and prediction always use the SAME features.
+IMPORTANT - v3 models predict the next-day RETURN, not the price:
+  predicted_price = Close * (1 + predicted_return)
+  FEATURES (from config.py) are scale-free: SMA20_ratio, SMA50_ratio,
+  EMA20_ratio, RSI. That is why one model now works for any stock price level.
 """
 
 import json
@@ -25,16 +25,17 @@ import pandas as pd
 import yfinance as yf
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-# Import the single source of truth for features and paths.
 # Try/except handles two cases:
 #   "from ml_service.config" works when Streamlit runs from the project root.
 #   "from config" works when you run this script directly (python ml_service/stock_utils.py).
 try:
     from ml_service.config import FEATURES, MODEL_LR_PATH, MODEL_RF_PATH, METRICS_PATH
     from ml_service.compute_indicators import add_rsi
+    from ml_service.features import add_scale_free_features
 except ImportError:
     from config import FEATURES, MODEL_LR_PATH, MODEL_RF_PATH, METRICS_PATH
     from compute_indicators import add_rsi
+    from features import add_scale_free_features
 
 
 # -----------------------------------------------------------------------------
@@ -51,13 +52,12 @@ def fetch_stock_data(symbol: str, period: str = "2y", interval: str = "1d") -> p
     Downloads historical OHLCV data from Yahoo Finance for one stock.
     Returns a DataFrame with columns: Date, Open, High, Low, Close, Volume.
 
-    Uses an in-memory cache — if you call this twice within 10 minutes for
+    Uses an in-memory cache - if you call this twice within 10 minutes for
     the same symbol, the second call returns the cached copy instantly.
     """
     cache_key = f"{symbol}_{period}_{interval}"
     now = time.time()
 
-    # Return cached copy if it's less than 10 minutes old
     if cache_key in _cache:
         cached_df, timestamp = _cache[cache_key]
         if now - timestamp < CACHE_TTL:
@@ -78,7 +78,7 @@ def fetch_stock_data(symbol: str, period: str = "2y", interval: str = "1d") -> p
     df = df.reset_index()
 
     # yfinance returns timezone-aware dates. We strip the timezone so the
-    # dates are plain datetime objects — easier to display and compare.
+    # dates are plain datetime objects - easier to display and compare.
     df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
 
     final_df = df[["Date", "Open", "High", "Low", "Close", "Volume"]]
@@ -93,23 +93,27 @@ def fetch_stock_data(symbol: str, period: str = "2y", interval: str = "1d") -> p
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Adds SMA20, SMA50, EMA20, and RSI columns to the DataFrame.
+    Adds SMA20, SMA50, EMA20, RSI, and the scale-free ratio columns
+    (SMA20_ratio, SMA50_ratio, EMA20_ratio) to the DataFrame.
     Works on a COPY so the original is never modified.
 
     After this, the first ~50 rows will have NaN values (SMA50 needs 50 rows
     of history). Always call df.dropna(subset=FEATURES) afterwards.
     """
-    df = df.copy()  # never modify the original — this is good Python practice
+    df = df.copy()
 
     # Simple Moving Averages
     df["SMA20"] = df["Close"].rolling(window=20).mean()
     df["SMA50"] = df["Close"].rolling(window=50).mean()
 
-    # Exponential Moving Average — recent days count more
+    # Exponential Moving Average - recent days count more
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
 
-    # RSI — momentum indicator. add_rsi() is imported from compute_indicators.py
+    # RSI - momentum indicator (already 0-100, so already scale-free)
     df = add_rsi(df, period=14)
+
+    # Scale-free ratios (same function train_model.py uses)
+    df = add_scale_free_features(df)
 
     return df
 
@@ -131,7 +135,6 @@ def load_model(model_name: str = "lr"):
     The model files live inside ml_service/ (defined in config.py).
     """
     if model_name not in _models:
-        # Pick the right file path based on which model is requested
         if model_name == "lr":
             path = MODEL_LR_PATH
         elif model_name == "rf":
@@ -157,7 +160,8 @@ def load_model(model_name: str = "lr"):
 def predict_next_close(symbol: str, model_name: str = "lr") -> dict:
     """
     Full pipeline for one prediction:
-      fetch -> add indicators -> drop NaN rows -> load model -> predict.
+      fetch -> add indicators -> drop NaN rows -> load model -> predict RETURN
+      -> convert to price.
 
     Returns a dictionary with prediction, model quality metrics, and indicators.
     The model_name parameter lets the caller choose "lr" or "rf".
@@ -171,27 +175,31 @@ def predict_next_close(symbol: str, model_name: str = "lr") -> dict:
 
     latest = df.iloc[-1]   # the most recent trading day
 
-    # Model expects shape (1, n_features) — reshape the latest row's values
+    # Model expects shape (1, n_features)
     X_latest = latest[FEATURES].values.reshape(1, -1)
 
     model = load_model(model_name)
-    predicted = float(model.predict(X_latest)[0])
 
+    # The model outputs tomorrow's RETURN (e.g. 0.004 = +0.4%) ...
+    predicted_return = float(model.predict(X_latest)[0])
+
+    # ... which we convert to a price in Rupees.
     last_close = float(latest["Close"])
+    predicted  = last_close * (1 + predicted_return)
     change     = predicted - last_close
-    change_pct = (change / last_close) * 100
+    change_pct = predicted_return * 100
 
     # --- Compute dynamic metrics on the last 20% of fetched data ---
-    # This tells us how accurate this model is for THIS specific stock recently.
+    # Tells us how accurate this model is for THIS specific stock recently.
+    df["Target_Close"] = df["Close"].shift(-1)
     split_idx = int(len(df) * 0.8)
-    test_df = df.iloc[split_idx:].copy()
-    test_df["Target_Close"] = test_df["Close"].shift(-1)
-    test_df = test_df.dropna(subset=["Target_Close"])
+    test_df = df.iloc[split_idx:].dropna(subset=["Target_Close"])
 
     if not test_df.empty:
-        X_test  = test_df[FEATURES].values
-        y_test  = test_df["Target_Close"].values
-        preds   = model.predict(X_test)
+        X_test     = test_df[FEATURES].values
+        y_test     = test_df["Target_Close"].values
+        pred_ret   = model.predict(X_test)
+        preds      = test_df["Close"].values * (1 + pred_ret)   # back to Rupees
 
         mae  = mean_absolute_error(y_test, preds)
         rmse = np.sqrt(mean_squared_error(y_test, preds))
@@ -249,7 +257,10 @@ def get_history_with_predictions(
         raise ValueError(f"Not enough data for '{symbol}'.")
 
     model = load_model(model_name)
-    df["Predicted"] = model.predict(df[FEATURES].values)
+
+    # Model gives RETURNS; convert each row's return to a price prediction
+    df["PredictedReturn"] = model.predict(df[FEATURES].values)
+    df["Predicted"] = df["Close"] * (1 + df["PredictedReturn"])
 
     # Shift predictions forward by one day so they align with the predicted date
     df["PredictedForToday"] = df["Predicted"].shift(1)
@@ -271,10 +282,19 @@ def get_history_with_predictions(
 
 # -----------------------------------------------------------------------------
 # Quick test: python ml_service/stock_utils.py
+# Runs RELIANCE.NS (training stock) and IRFC.NS (the stock that showed the bug)
 # -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("Testing with RELIANCE.NS ...\n")
-    result = predict_next_close("RELIANCE.NS", model_name="lr")
-    for key, value in result.items():
-        print(f"  {key}: {value}")
+    for sym in ["RELIANCE.NS", "IRFC.NS"]:
+        print(f"\n=== {sym} ===")
+        result = predict_next_close(sym, model_name="lr")
+        for key, value in result.items():
+            print(f"  {key}: {value}")
+
+        hist = get_history_with_predictions(sym, days=120, model_name="lr")
+        gaps = [h["predicted"] - h["actual"] for h in hist if h["predicted"] is not None]
+        avg_gap = sum(gaps) / len(gaps)
+        avg_abs_gap = sum(abs(g) for g in gaps) / len(gaps)
+        print(f"  avg (predicted - actual) over last {len(gaps)} days: Rs {avg_gap:.2f}")
+        print(f"  avg |predicted - actual|: Rs {avg_abs_gap:.2f}")

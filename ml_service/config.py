@@ -28,16 +28,16 @@ ML_DIR = Path(__file__).parent
 
 
 # ---- Feature list ----
-# These are the columns fed to the ML model as inputs.
+# All features are SCALE-FREE (ratios / RSI), so the same model works for
+# a Rs 80 stock and a Rs 1300 stock. Raw "Close" is NOT a feature anymore.
 # Order matters: must be the same during training AND during prediction.
-FEATURES = ["Close", "SMA20", "SMA50", "EMA20", "RSI"]
-
+FEATURES = ["SMA20_ratio", "SMA50_ratio", "EMA20_ratio", "RSI"]
 
 # ---- Model file paths ----
-# The original model (trained on 4 features, no RSI) is kept untouched
-# so the old version of the app still works.
-MODEL_LR_PATH = ML_DIR / "linear_regression_model_v2.pkl"   # Linear Regression (5 features)
-MODEL_RF_PATH = ML_DIR / "random_forest_model.pkl"           # Random Forest     (5 features)
+# v3 = scale-free models (predict next-day RETURN). Older v2/original .pkl
+# files are kept untouched.
+MODEL_LR_PATH = ML_DIR / "linear_regression_model_v3.pkl"
+MODEL_RF_PATH = ML_DIR / "random_forest_model_v3.pkl"
 
 # ---- Metrics file path ----
 # train_model.py writes here; pages/3_Model_Info.py reads from here.

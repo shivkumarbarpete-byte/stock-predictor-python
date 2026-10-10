@@ -1,13 +1,13 @@
 {
   "trained_on": "RELIANCE.NS",
-  "train_date": "2026-10-09",
+  "train_date": "2026-10-10",
   "features": [
-    "Close",
-    "SMA20",
-    "SMA50",
-    "EMA20",
+    "SMA20_ratio",
+    "SMA50_ratio",
+    "EMA20_ratio",
     "RSI"
   ],
+  "target": "next_day_return",
   "train_rows": 356,
   "test_rows": 89,
   "models": [
@@ -21,23 +21,36 @@
     {
       "name": "Linear Regression",
       "key": "lr",
-      "rmse": 15.5395,
-      "mae": 12.457,
-      "r2": 0.665168
+      "rmse": 15.3977,
+      "mae": 12.3714,
+      "r2": 0.671254
     },
     {
       "name": "Random Forest",
       "key": "rf",
-      "rmse": 19.1966,
-      "mae": 15.6375,
-      "r2": 0.489027
+      "rmse": 16.3337,
+      "mae": 13.2917,
+      "r2": 0.630069
     }
   ],
+  "extra_metrics": {
+    "naive": {
+      "r2_return": -0.007884,
+      "dir_acc": null
+    },
+    "lr": {
+      "r2_return": -0.03618,
+      "dir_acc": 0.4382
+    },
+    "rf": {
+      "r2_return": -0.171398,
+      "dir_acc": 0.4944
+    }
+  },
   "feature_importances": {
-    "Close": 0.974899,
-    "SMA20": 0.005299,
-    "SMA50": 0.007002,
-    "EMA20": 0.005429,
-    "RSI": 0.007372
+    "SMA20_ratio": 0.22219,
+    "SMA50_ratio": 0.254571,
+    "EMA20_ratio": 0.226261,
+    "RSI": 0.296978
   }
 }
