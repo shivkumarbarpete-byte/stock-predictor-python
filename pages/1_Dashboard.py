@@ -202,7 +202,17 @@ if st.session_state.chart_data is not None and st.session_state.prediction is no
     st.divider()
 
     # ── Plotly chart ─────────────────────────────────────────────────────────
-    fig = build_chart(st.session_state.chart_data, symbol)
+    chart_style = st.radio(
+        label="Chart style",
+        options=["Line", "Candlestick"],
+        index=0,
+        horizontal=True,
+        key="chart_type_choice",
+        help="Line shows only the close price. Candlestick shows open, high, low and close for each day.",
+    )
+    chart_type = "candle" if chart_style == "Candlestick" else "line"
+
+    fig = build_chart(st.session_state.chart_data, symbol, chart_type=chart_type)
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Technical indicators row ─────────────────────────────────────────────

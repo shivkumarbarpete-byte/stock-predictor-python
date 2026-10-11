@@ -1,98 +1,117 @@
 """
 utils/chart_helpers.py
 ----------------------
-Builds the Plotly line chart used on the Dashboard page.
+Builds the Plotly chart used on the Dashboard page.
 
 We put chart code here (instead of in the page file) because:
   - It keeps pages/1_Dashboard.py short and easy to read
   - If we ever want to reuse the chart on another page, we just import it
 
-The function build_chart() takes the list returned by
-get_history_with_predictions() and returns a Plotly figure object.
+build_chart() takes the list returned by get_history_with_predictions()
+and returns a Plotly figure object.
 
-Chart has 4 lines:
-  1. Actual close price      — blue,   solid
-  2. Predicted close price   — red,    solid
-  3. SMA20 (20-day average)  — green,  dashed
-  4. SMA50 (50-day average)  — purple, dashed
+Two chart types (chart_type argument):
+  "line"   (default) - actual close price as a blue line
+  "candle"           - candlestick (open/high/low/close); green candle = close
+                       above open, red candle = close below open
+
+Both types also draw:
+  - Predicted close price   - red,    solid
+  - SMA20 (20-day average)  - green,  dashed
+  - SMA50 (50-day average)  - purple, dashed
 """
 
 import pandas as pd
 import plotly.graph_objects as go
 
 
-def build_chart(history_data: list, symbol: str) -> go.Figure:
+def build_chart(history_data: list, symbol: str, chart_type: str = "line") -> go.Figure:
     """
-    Builds and returns a Plotly figure with 4 lines for one stock.
+    Builds and returns a Plotly figure for one stock.
 
     history_data : list of dicts from get_history_with_predictions()
-                   Each dict has keys: date, actual, predicted, sma20, sma50
-    symbol       : stock ticker (e.g. "RELIANCE.NS") — used in the chart title
+                   Each dict has keys: date, open, high, low, actual,
+                   predicted, sma20, sma50
+    symbol       : stock ticker (e.g. "RELIANCE.NS") - used in the chart title
+    chart_type   : "line" (default) or "candle"
     """
-    # Convert the list of dicts to a DataFrame — easier to work with for charts
     df = pd.DataFrame(history_data)
 
-    # Create an empty Plotly figure
     fig = go.Figure()
 
-    # --- Line 1: Actual Close Price (blue, solid) ---
-    fig.add_trace(go.Scatter(
-        x=df["date"],
-        y=df["actual"],
-        name="Actual Close",
-        line=dict(color="#3B82F6", width=2),   # blue
-        hovertemplate="Date: %{x}<br>Actual: ₹%{y:.2f}<extra></extra>",
-    ))
+    # --- Main price series: line OR candlestick ---
+    if chart_type == "candle":
+        fig.add_trace(go.Candlestick(
+            x=df["date"],
+            open=df["open"],
+            high=df["high"],
+            low=df["low"],
+            close=df["actual"],
+            name="Price",
+            increasing_line_color="#22C55E",   # green candle: close > open
+            decreasing_line_color="#EF4444",   # red candle:   close < open
+        ))
+        title_text = f"{symbol} - Candlestick with Predicted Close (Last 120 days)"
+    else:
+        fig.add_trace(go.Scatter(
+            x=df["date"],
+            y=df["actual"],
+            name="Actual Close",
+            line=dict(color="#3B82F6", width=2),   # blue
+            hovertemplate="Date: %{x}<br>Actual: ₹%{y:.2f}<extra></extra>",
+        ))
+        title_text = f"{symbol} - Actual vs Predicted Close Price (Last 120 days)"
 
-    # --- Line 2: Predicted Close Price (red, solid) ---
+    # --- Predicted Close Price (orange so it stands out on candles) ---
     fig.add_trace(go.Scatter(
         x=df["date"],
         y=df["predicted"],
         name="Predicted Close",
-        line=dict(color="#EF4444", width=2),   # red
+        line=dict(color="#F59E0B" if chart_type == "candle" else "#EF4444", width=2),
         hovertemplate="Date: %{x}<br>Predicted: ₹%{y:.2f}<extra></extra>",
     ))
 
-    # --- Line 3: SMA20 — 20-day Simple Moving Average (green, dashed) ---
+    # --- SMA20 (green, dashed) ---
     fig.add_trace(go.Scatter(
         x=df["date"],
         y=df["sma20"],
         name="SMA 20",
-        line=dict(color="#22C55E", width=1.5, dash="dash"),   # green dashed
+        line=dict(color="#0EA5E9", width=1.5, dash="dash"),
         hovertemplate="Date: %{x}<br>SMA20: ₹%{y:.2f}<extra></extra>",
     ))
 
-    # --- Line 4: SMA50 — 50-day Simple Moving Average (purple, dashed) ---
+    # --- SMA50 (purple, dashed) ---
     fig.add_trace(go.Scatter(
         x=df["date"],
         y=df["sma50"],
         name="SMA 50",
-        line=dict(color="#A855F7", width=1.5, dash="dash"),   # purple dashed
+        line=dict(color="#A855F7", width=1.5, dash="dash"),
         hovertemplate="Date: %{x}<br>SMA50: ₹%{y:.2f}<extra></extra>",
     ))
 
-    # --- Chart layout / styling ---
+    # --- Layout / styling ---
     fig.update_layout(
-        title=dict(
-            text=f"{symbol} — Actual vs Predicted Close Price (Last 120 days)",
-            font=dict(size=16),
-        ),
+        title=dict(text=title_text, font=dict(size=16)),
         xaxis_title="Date",
         yaxis_title="Price (₹)",
-        hovermode="x unified",       # shows all 4 values when you hover over a date
+        hovermode="x unified",
         legend=dict(
-            orientation="h",         # horizontal legend below the chart
+            orientation="h",
             yanchor="bottom",
             y=-0.3,
             xanchor="center",
             x=0.5,
         ),
-        template="plotly_white",     # clean white background
+        template="plotly_white",
         height=450,
         margin=dict(l=40, r=40, t=60, b=80),
+        xaxis_rangeslider_visible=False,   # hide the slider Plotly adds under candlesticks
     )
 
-    # Nicer date tick format on the x-axis
-    fig.update_xaxes(tickformat="%b %Y")
+    # Nicer date ticks + skip Saturday/Sunday gaps (market is closed)
+    fig.update_xaxes(
+        tickformat="%b %Y",
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+    )
 
     return fig

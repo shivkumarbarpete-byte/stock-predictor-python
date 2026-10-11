@@ -272,6 +272,9 @@ def get_history_with_predictions(
         pred = row["PredictedForToday"]
         result.append({
             "date":      row["Date"].strftime("%Y-%m-%d"),
+            "open":      round(float(row["Open"]), 2),
+            "high":      round(float(row["High"]), 2),
+            "low":       round(float(row["Low"]), 2),
             "actual":    round(float(row["Close"]), 2),
             "predicted": None if pd.isna(pred) else round(float(pred), 2),
             "sma20":     round(float(row["SMA20"]), 2),
