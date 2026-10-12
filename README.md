@@ -27,6 +27,9 @@ Hosted on Streamlit Community Cloud. If the app has been idle, it may take a few
 | Naive baseline | Always compared against "tomorrow = today's close" |
 | Metrics | RMSE, MAE, R² on a held-out time-ordered test set |
 | Interactive UI | Streamlit multi-page app with Plotly charts |
+| News Sentiment & AI Summary | Real-time headline fetching, VADER polarity classification (Bullish/Neutral/Bearish), breakdown metrics & AI summary |
+| Risk / Reward Calculator | Automated Stop-Loss, Target, and R:R ratio calculation based on model RMSE, 20-day swing levels, and portfolio position sizing |
+| Download Reports (PDF/CSV) | Clean executive PDF reports (via `fpdf2`) and CSV exports for Dashboard and Strategy Backtest |
 | Watchlist | Save favourite stocks to a local JSON file |
 | Model info page | Feature importance chart, comparison table, honest disclaimer |
 
@@ -39,7 +42,8 @@ Hosted on Streamlit Community Cloud. If the app has been idle, it may take a few
 | UI | [Streamlit](https://streamlit.io/) |
 | Charts | [Plotly](https://plotly.com/python/) |
 | Data | [yfinance](https://github.com/ranaroussi/yfinance), [pandas](https://pandas.pydata.org/) |
-| ML | [scikit-learn](https://scikit-learn.org/) |
+| ML & Sentiment | [scikit-learn](https://scikit-learn.org/), [vaderSentiment](https://github.com/cjhutto/vaderSentiment) |
+| PDF Reports | [fpdf2](https://py-pdf.github.io/fpdf2/) |
 | Model storage | [joblib](https://joblib.readthedocs.io/) |
 | Numerics | [numpy](https://numpy.org/) |
 

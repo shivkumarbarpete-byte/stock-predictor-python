@@ -15,9 +15,13 @@ How session_state works in Streamlit:
   so we use it to remember fetched data without calling Yahoo Finance again.
 """
 
+import pandas as pd
 import streamlit as st
 
 from ml_service.stock_utils import get_history_with_predictions, predict_next_close
+from ml_service.news_sentiment import analyze_news_sentiment
+from ml_service.risk_reward import render_risk_reward_widget
+from ml_service.pdf_report import generate_dashboard_pdf
 from utils.watchlist import load_watchlist, save_watchlist
 from utils.chart_helpers import build_chart, build_indicator_chart
 
@@ -39,10 +43,12 @@ st.divider()
 # SESSION STATE — initialise all keys before use
 # ──────────────────────────────────────────────────────────────────────────────
 
-if "chart_data"      not in st.session_state: st.session_state.chart_data      = None
-if "prediction"      not in st.session_state: st.session_state.prediction      = None
-if "current_symbol"  not in st.session_state: st.session_state.current_symbol  = None
-if "model_name_used" not in st.session_state: st.session_state.model_name_used = None
+if "chart_data"        not in st.session_state: st.session_state.chart_data        = None
+if "prediction"        not in st.session_state: st.session_state.prediction        = None
+if "current_symbol"    not in st.session_state: st.session_state.current_symbol    = None
+if "model_name_used"   not in st.session_state: st.session_state.model_name_used   = None
+if "sentiment_data"    not in st.session_state: st.session_state.sentiment_data    = None
+if "risk_reward_data"  not in st.session_state: st.session_state.risk_reward_data  = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -83,9 +89,11 @@ with col_btn:
 if (st.session_state.model_name_used is not None
         and model_name != st.session_state.model_name_used
         and st.session_state.chart_data is not None):
-    st.session_state.chart_data     = None
-    st.session_state.prediction     = None
-    st.session_state.model_name_used = None
+    st.session_state.chart_data       = None
+    st.session_state.prediction       = None
+    st.session_state.model_name_used  = None
+    st.session_state.sentiment_data   = None
+    st.session_state.risk_reward_data = None
     st.info(f"Model changed to **{model_choice}**. Click **Fetch & Predict** to reload.")
 
 
@@ -101,7 +109,7 @@ if fetch_clicked:
             "This tool supports NSE India stocks only."
         )
     else:
-        with st.spinner(f"Fetching **{symbol_input}** using **{model_choice}**… (a few seconds)"):
+        with st.spinner(f"Fetching **{symbol_input}** using **{model_choice}** and analyzing news sentiment… (a few seconds)"):
             try:
                 # get_history_with_predictions() -> list of dicts for the chart
                 chart_data = get_history_with_predictions(
@@ -110,11 +118,16 @@ if fetch_clicked:
                 # predict_next_close() -> single prediction dict with metrics
                 prediction = predict_next_close(symbol_input, model_name=model_name)
 
+                # analyze_news_sentiment() -> fetches recent headlines & classifies sentiment
+                sentiment_data = analyze_news_sentiment(symbol_input)
+
                 # Store in session_state so results survive the next re-run
-                st.session_state.chart_data      = chart_data
-                st.session_state.prediction      = prediction
-                st.session_state.current_symbol  = symbol_input
-                st.session_state.model_name_used = model_name
+                st.session_state.chart_data       = chart_data
+                st.session_state.prediction       = prediction
+                st.session_state.sentiment_data   = sentiment_data
+                st.session_state.current_symbol   = symbol_input
+                st.session_state.model_name_used  = model_name
+                st.session_state.risk_reward_data = None
 
             except FileNotFoundError as e:
                 # Model .pkl file hasn't been created yet
@@ -122,8 +135,10 @@ if fetch_clicked:
                     f"❌ Model file not found.\n\n**Details:** {e}\n\n"
                     "Please run: `python ml_service/train_model.py` first."
                 )
-                st.session_state.chart_data = None
-                st.session_state.prediction = None
+                st.session_state.chart_data       = None
+                st.session_state.prediction       = None
+                st.session_state.sentiment_data   = None
+                st.session_state.risk_reward_data = None
 
             except ValueError as e:
                 # Wrong symbol or no internet data
@@ -132,8 +147,10 @@ if fetch_clicked:
                     f"**Details:** {e}\n\n"
                     "Check the symbol spelling and your internet connection."
                 )
-                st.session_state.chart_data = None
-                st.session_state.prediction = None
+                st.session_state.chart_data       = None
+                st.session_state.prediction       = None
+                st.session_state.sentiment_data   = None
+                st.session_state.risk_reward_data = None
 
             except Exception as e:
                 # Catch-all for unexpected issues
@@ -142,8 +159,10 @@ if fetch_clicked:
                     f"**Details:** {e}\n\n"
                     "Check your internet connection and try again."
                 )
-                st.session_state.chart_data = None
-                st.session_state.prediction = None
+                st.session_state.chart_data       = None
+                st.session_state.prediction       = None
+                st.session_state.sentiment_data   = None
+                st.session_state.risk_reward_data = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -208,6 +227,51 @@ if st.session_state.chart_data is not None and st.session_state.prediction is no
 
     st.divider()
 
+    # ── News Sentiment & AI Market Summary ───────────────────────────────────
+    st.subheader("📰 Live News Sentiment & AI Summary")
+    st.caption("Real-time sentiment classified using VADER from recent financial news headlines for this stock.")
+
+    if st.session_state.sentiment_data is None:
+        st.session_state.sentiment_data = analyze_news_sentiment(symbol)
+
+    s_data = st.session_state.sentiment_data
+    if s_data:
+        counts = s_data.get("counts", {})
+        s_col1, s_col2, s_col3, s_col4 = st.columns([2, 1.2, 1.2, 1.2])
+
+        with s_col1:
+            st.metric(
+                label="Overall Sentiment",
+                value=f"{s_data.get('emoji', '⚪')} {s_data.get('sentiment_label', 'Neutral')}",
+                delta=f"Polarity Score: {s_data.get('overall_score', 0.0):+.2f}",
+                delta_color="normal" if s_data.get("overall_score", 0.0) >= 0 else "inverse",
+                help="Aggregated polarity score (-1.0 to +1.0) derived from recent headlines.",
+            )
+
+        with s_col2:
+            st.metric("🟢 Positive Stories", f"{counts.get('positive', 0)} / {counts.get('total', 0)}")
+
+        with s_col3:
+            st.metric("⚪ Neutral Stories", f"{counts.get('neutral', 0)} / {counts.get('total', 0)}")
+
+        with s_col4:
+            st.metric("🔴 Negative Stories", f"{counts.get('negative', 0)} / {counts.get('total', 0)}")
+
+        # AI summary narrative card
+        st.info(f"🤖 **AI Summary:** {s_data.get('ai_summary', '')}")
+
+        with st.expander(f"🔍 View {counts.get('total', 0)} News Headlines & Sentiment Breakdown"):
+            for art in s_data.get("articles", []):
+                c_head, c_meta = st.columns([4, 1.2])
+                with c_head:
+                    st.markdown(f"**{art.get('emoji', '⚪')} [{art.get('title', '')}]({art.get('link', '#')})**")
+                    st.caption(f"Source: {art.get('publisher', 'News')}  ·  Published: {art.get('published', 'Recent')}")
+                with c_meta:
+                    st.markdown(f"Score: `{art.get('score', 0.0):+.2f}` ({art.get('label', 'Neutral')})")
+                st.divider()
+
+    st.divider()
+
     # ── Plotly chart ─────────────────────────────────────────────────────────
     chart_style = st.radio(
         label="Chart style",
@@ -238,21 +302,57 @@ if st.session_state.chart_data is not None and st.session_state.prediction is no
             "Green bars = MACD above signal (bullish momentum). Red bars = below signal (bearish)."
         )
 
-    # ── CSV download ─────────────────────────────────────────────────────────
-    # Convert the chart data list-of-dicts to a DataFrame, then to CSV bytes.
-    # We build the CSV here so it is always in sync with what is displayed.
-    import pandas as pd  # already a dependency; import inside block to keep top clean
+    st.divider()
 
-    csv_df  = pd.DataFrame(st.session_state.chart_data)
+    # ── Risk / Reward & Position Sizing Calculator ───────────────────────────
+    rr_calc = render_risk_reward_widget(
+        current_price=pred["last_close"],
+        predicted_price=pred["predicted_close"],
+        rmse=rmse,
+        chart_data=st.session_state.chart_data,
+        key_prefix="dash_rr",
+    )
+    st.session_state.risk_reward_data = rr_calc
+
+    st.divider()
+
+    # ── Download Reports & Raw Data (PDF / CSV) ──────────────────────────────
+    st.subheader("📥 Export & Download Reports")
+    st.caption("Generate complete PDF research reports or export historical data and model predictions as CSV.")
+
+    csv_df = pd.DataFrame(st.session_state.chart_data)
     csv_str = csv_df.to_csv(index=False)
 
-    st.download_button(
-        label="⬇️ Download data as CSV",
-        data=csv_str,
-        file_name=f"{symbol}_history.csv",
-        mime="text/csv",
-        help="Downloads the last 120 days of OHLCV data plus all computed indicators as a CSV file.",
+    pdf_bytes = generate_dashboard_pdf(
+        symbol=symbol,
+        pred=pred,
+        chart_data=st.session_state.chart_data,
+        sentiment_data=st.session_state.sentiment_data,
+        risk_reward_data=st.session_state.risk_reward_data,
     )
+
+    down_col1, down_col2 = st.columns(2)
+
+    with down_col1:
+        st.download_button(
+            label="📄 Download Analysis Report (PDF)",
+            data=pdf_bytes,
+            file_name=f"{symbol.replace('.NS', '')}_analysis_report.pdf",
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True,
+            help="Generates a downloadable PDF report compiling model predictions, indicators, news sentiment, and trade setup.",
+        )
+
+    with down_col2:
+        st.download_button(
+            label="📊 Download Raw History & Predictions (CSV)",
+            data=csv_str,
+            file_name=f"{symbol.replace('.NS', '')}_history_predictions.csv",
+            mime="text/csv",
+            use_container_width=True,
+            help="Downloads the last 120 days of OHLCV data, indicators, and model predictions as a CSV file.",
+        )
 
     st.divider()
 

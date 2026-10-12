@@ -19,6 +19,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from ml_service.backtest import run_backtest
+from ml_service.pdf_report import generate_backtest_pdf
+from ml_service.risk_reward import render_risk_reward_widget
 
 # --- Page config ---
 st.set_page_config(
@@ -297,7 +299,82 @@ if data:
     st.divider()
 
     # ──────────────────────────────────────────────────────────────────────────
-    # 3. HONEST DISCLAIMERS & DATA LEAKAGE WARNING
+    # 3. RISK / REWARD & POSITION SIZING CALCULATOR
+    # ──────────────────────────────────────────────────────────────────────────
+    latest_close = float(daily_df["Close"].iloc[-1])
+    last_pred_ret = float(daily_df["Predicted_Return"].iloc[-1])
+    latest_pred_close = latest_close * (1.0 + last_pred_ret)
+    daily_vol = float(daily_df["Asset_Return"].std()) * latest_close if len(daily_df) > 5 else latest_close * 0.02
+
+    # Build lightweight chart_data list for swing levels from daily_df
+    bt_chart_data = [
+        {"low": float(row["Close"]) * 0.99, "high": float(row["Close"]) * 1.01}
+        for _, row in daily_df.tail(20).iterrows()
+    ]
+
+    render_risk_reward_widget(
+        current_price=latest_close,
+        predicted_price=latest_pred_close,
+        rmse=daily_vol,
+        chart_data=bt_chart_data,
+        key_prefix="bt_rr",
+    )
+
+    st.divider()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 4. DOWNLOAD REPORTS & CSV EXPORT
+    # ──────────────────────────────────────────────────────────────────────────
+    st.subheader("📥 Export & Download Reports")
+    st.caption("Download the comprehensive Backtest Performance Report as a PDF or export raw equity curve and trade logs as CSV.")
+
+    pdf_bt_bytes = generate_backtest_pdf(
+        symbol=data["symbol"],
+        backtest_data=data,
+    )
+    daily_csv_str = daily_df.to_csv(index=False)
+
+    col_dl1, col_dl2, col_dl3 = st.columns(3)
+
+    with col_dl1:
+        st.download_button(
+            label="📄 Download Backtest PDF Report",
+            data=pdf_bt_bytes,
+            file_name=f"{data['symbol'].replace('.NS', '')}_backtest_report.pdf",
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True,
+            help="Generates an executive PDF report containing performance comparison, trade log, and risk disclaimers.",
+        )
+
+    with col_dl2:
+        st.download_button(
+            label="📊 Download Daily Equity Curve (CSV)",
+            data=daily_csv_str,
+            file_name=f"{data['symbol'].replace('.NS', '')}_daily_equity.csv",
+            mime="text/csv",
+            use_container_width=True,
+            help="Exports daily timestamps, positions, returns, and equity values for strategy and benchmark.",
+        )
+
+    with col_dl3:
+        if data["trade_events"]:
+            trades_csv_str = pd.DataFrame(data["trade_events"]).to_csv(index=False)
+            st.download_button(
+                label="📋 Download Completed Trades (CSV)",
+                data=trades_csv_str,
+                file_name=f"{data['symbol'].replace('.NS', '')}_trades_log.csv",
+                mime="text/csv",
+                use_container_width=True,
+                help="Exports all completed entry and exit trade records with holding periods and net returns.",
+            )
+        else:
+            st.button("📋 No Completed Trades", disabled=True, use_container_width=True)
+
+    st.divider()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 5. HONEST DISCLAIMERS & DATA LEAKAGE WARNING
     # ──────────────────────────────────────────────────────────────────────────
     st.subheader("⚠️ Critical Disclaimers & Methodology Notes")
 
