@@ -22,6 +22,7 @@ import streamlit as st
 
 # Import the path to metrics.json from the central config
 from ml_service.config import METRICS_PATH
+from ml_service.validation import run_walk_forward_validation
 
 # --- Page config ---
 st.set_page_config(
@@ -79,7 +80,7 @@ st.divider()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SECTION 2 — Model comparison table
+# SECTION 2 — Model comparison table & Directional Accuracy
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.subheader("📊 Model Comparison (Test Set)")
@@ -135,10 +136,141 @@ with b3:
     st.metric(
         "✅ Best R²",
         f"{best_model['r2']:.4f}",
-        help="R² = 1.0 is perfect. Tells you how much of price variation the model explains.",
+        help="R² on price. High price R² is expected because tomorrow's price is close to today's.",
     )
 
+# ── Directional accuracy for LR and RF vs 50% coin-flip line ──
+st.markdown("---")
+st.subheader("🎯 Directional Accuracy vs 50% Coin-Flip Line")
+st.caption(
+    "Measures the % of test days the model correctly called the market direction (Up vs Down). "
+    "A pure coin flip gives 50%. A useful model must consistently beat 50%."
+)
+
+extra_m = metrics_data.get("extra_metrics", {})
+lr_dir = extra_m.get("lr", {}).get("dir_acc")
+rf_dir = extra_m.get("rf", {}).get("dir_acc")
+lr_dir_pct = (lr_dir * 100) if lr_dir is not None else 0.0
+rf_dir_pct = (rf_dir * 100) if rf_dir is not None else 0.0
+
+col_d1, col_d2, col_d3 = st.columns(3)
+with col_d1:
+    st.metric(
+        "🪙 Coin-Flip Baseline",
+        "50.0%",
+        help="Pure random guessing baseline.",
+    )
+with col_d2:
+    delta_lr = lr_dir_pct - 50.0
+    st.metric(
+        "Linear Regression",
+        f"{lr_dir_pct:.1f}%",
+        delta=f"{delta_lr:+.1f}pp vs coin flip",
+        delta_color="normal" if delta_lr >= 0 else "inverse",
+        help="Test-set directional accuracy for Linear Regression.",
+    )
+with col_d3:
+    delta_rf = rf_dir_pct - 50.0
+    st.metric(
+        "Random Forest",
+        f"{rf_dir_pct:.1f}%",
+        delta=f"{delta_rf:+.1f}pp vs coin flip",
+        delta_color="normal" if delta_rf >= 0 else "inverse",
+        help="Test-set directional accuracy for Random Forest.",
+    )
+
+# Visual Plotly chart with 50% coin-flip reference line
+fig_dir = go.Figure()
+fig_dir.add_trace(go.Bar(
+    x=["Linear Regression", "Random Forest"],
+    y=[lr_dir_pct, rf_dir_pct],
+    marker_color=["#3B82F6", "#10B981"],
+    text=[f"{lr_dir_pct:.1f}%", f"{rf_dir_pct:.1f}%"],
+    textposition="outside",
+    width=0.35,
+    name="Model Accuracy",
+))
+fig_dir.add_hline(
+    y=50,
+    line_dash="dash",
+    line_color="#EF4444",
+    line_width=2,
+    annotation_text="50% Coin-Flip Line",
+    annotation_position="top right",
+    annotation_font_color="#EF4444",
+)
+fig_dir.update_layout(
+    title="Directional Accuracy on Held-Out Test Set",
+    yaxis=dict(title="Accuracy (%)", range=[0, 100]),
+    xaxis=dict(title="Model"),
+    template="plotly_white",
+    height=320,
+    margin=dict(l=60, r=40, t=50, b=40),
+)
+st.plotly_chart(fig_dir, use_container_width=True)
+
 st.divider()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SECTION 3 — Walk-Forward Validation (Expanding Window, 5 Folds)
+# ──────────────────────────────────────────────────────────────────────────────
+
+st.subheader("🔄 Walk-Forward Validation (Expanding Window, 5 Folds)")
+st.markdown(
+    "A single train/test split can be lucky or unlucky depending on market conditions. "
+    "**Walk-forward validation** (time-ordered, expanding window, 5 folds, no shuffling) tests "
+    "the models across 5 distinct sequential time windows."
+)
+
+with st.spinner("Loading walk-forward validation results..."):
+    wf_raw = run_walk_forward_validation(n_splits=5)
+
+# Build a formatted copy with summary row
+display_wf = wf_raw.copy()
+
+# Add an Average summary row
+avg_row = {
+    "Fold": "**Average (5 Folds)**",
+    "Test Period": "All test windows",
+    "Train / Test Size": "—",
+    "Naive Return MAE": display_wf["Naive Return MAE"].mean(),
+    "LR Return MAE": display_wf["LR Return MAE"].mean(),
+    "RF Return MAE": display_wf["RF Return MAE"].mean(),
+    "LR Dir. Accuracy": display_wf["LR Dir. Accuracy"].mean(),
+    "RF Dir. Accuracy": display_wf["RF Dir. Accuracy"].mean(),
+}
+display_wf = pd.concat([display_wf, pd.DataFrame([avg_row])], ignore_index=True)
+
+# Format floats for clean presentation
+formatted_wf = pd.DataFrame({
+    "Fold": display_wf["Fold"],
+    "Test Window": display_wf["Test Period"],
+    "Train / Test Size": display_wf["Train / Test Size"],
+    "Naive Return MAE": display_wf["Naive Return MAE"].apply(lambda v: f"{v:.4f} ({v*100:.2f}%)"),
+    "LR Return MAE": display_wf["LR Return MAE"].apply(lambda v: f"{v:.4f} ({v*100:.2f}%)"),
+    "RF Return MAE": display_wf["RF Return MAE"].apply(lambda v: f"{v:.4f} ({v*100:.2f}%)"),
+    "LR Dir. Acc": display_wf["LR Dir. Accuracy"].apply(lambda v: f"{v:.1f}%"),
+    "RF Dir. Acc": display_wf["RF Dir. Accuracy"].apply(lambda v: f"{v:.1f}%"),
+})
+
+st.dataframe(formatted_wf, use_container_width=True, hide_index=True)
+
+# Plain-English "How to read these results" box
+st.info(
+    "💡 **How to read these results (Interview Takeaway):**\n\n"
+    "1. **The models do not beat the naive baseline:** Across folds, the Naive baseline "
+    "(`tomorrow's return = 0`, or `tomorrow = today`) consistently achieves a Return MAE equal to or lower "
+    "than both Linear Regression and Random Forest.\n"
+    "2. **Directional accuracy hovers near ~50% (coin flip):** The models cannot reliably call whether "
+    "tomorrow will be an Up or Down day better than random chance.\n"
+    "3. **Why this is completely expected:** In liquid financial markets, day-to-day returns approximate a random walk "
+    "(weak-form Market Efficiency). Lagged technical indicators alone do not provide persistent alpha over 1-day horizons. "
+    "Recognizing and demonstrating this honest evaluation is precisely what quantitative interviewers look for."
+)
+
+st.divider()
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────

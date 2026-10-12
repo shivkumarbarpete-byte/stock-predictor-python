@@ -27,6 +27,7 @@ st.set_page_config(
 
 st.title("⭐ My Watchlist")
 st.caption("Your saved stocks. Go to the Dashboard to add new ones.")
+st.caption("Demo mode: your watchlist is kept for this browser session only.")
 
 st.divider()
 

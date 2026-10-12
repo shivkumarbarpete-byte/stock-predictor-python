@@ -30,11 +30,11 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 #   "from config" works when you run this script directly (python ml_service/stock_utils.py).
 try:
     from ml_service.config import FEATURES, MODEL_LR_PATH, MODEL_RF_PATH, METRICS_PATH
-    from ml_service.compute_indicators import add_rsi
+    from ml_service.compute_indicators import add_rsi, add_macd, add_bollinger_bands
     from ml_service.features import add_scale_free_features
 except ImportError:
     from config import FEATURES, MODEL_LR_PATH, MODEL_RF_PATH, METRICS_PATH
-    from compute_indicators import add_rsi
+    from compute_indicators import add_rsi, add_macd, add_bollinger_bands
     from features import add_scale_free_features
 
 
@@ -93,9 +93,13 @@ def fetch_stock_data(symbol: str, period: str = "2y", interval: str = "1d") -> p
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Adds SMA20, SMA50, EMA20, RSI, and the scale-free ratio columns
-    (SMA20_ratio, SMA50_ratio, EMA20_ratio) to the DataFrame.
+    Adds SMA20, SMA50, EMA20, RSI, scale-free ratio columns, plus the
+    display-only indicators MACD and Bollinger Bands.
     Works on a COPY so the original is never modified.
+
+    Model FEATURES (SMA20_ratio, SMA50_ratio, EMA20_ratio, RSI) are unchanged.
+    MACD and Bollinger Bands are computed here so they are available in
+    get_history_with_predictions() for the indicator chart on the Dashboard.
 
     After this, the first ~50 rows will have NaN values (SMA50 needs 50 rows
     of history). Always call df.dropna(subset=FEATURES) afterwards.
@@ -114,6 +118,11 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # Scale-free ratios (same function train_model.py uses)
     df = add_scale_free_features(df)
+
+    # Display-only indicators: MACD and Bollinger Bands
+    # These are NOT in FEATURES and do not affect the model at all.
+    df = add_macd(df, fast=12, slow=26, signal=9)
+    df = add_bollinger_bands(df, window=20, num_std=2.0)
 
     return df
 
@@ -191,23 +200,56 @@ def predict_next_close(symbol: str, model_name: str = "lr") -> dict:
 
     # --- Compute dynamic metrics on the last 20% of fetched data ---
     # Tells us how accurate this model is for THIS specific stock recently.
-    df["Target_Close"] = df["Close"].shift(-1)
+    df["Target_Close"]  = df["Close"].shift(-1)
+    df["Target_Return"] = df["Close"].pct_change().shift(-1)  # actual next-day return
     split_idx = int(len(df) * 0.8)
-    test_df = df.iloc[split_idx:].dropna(subset=["Target_Close"])
+    test_df = df.iloc[split_idx:].dropna(subset=["Target_Close", "Target_Return"])
 
     if not test_df.empty:
         X_test     = test_df[FEATURES].values
-        y_test     = test_df["Target_Close"].values
+        y_test     = test_df["Target_Close"].values       # actual next-day PRICE
+        y_ret_test = test_df["Target_Return"].values      # actual next-day RETURN
+
         pred_ret   = model.predict(X_test)
-        preds      = test_df["Close"].values * (1 + pred_ret)   # back to Rupees
+        preds      = test_df["Close"].values * (1 + pred_ret)   # predicted PRICE
 
         mae  = mean_absolute_error(y_test, preds)
         rmse = np.sqrt(mean_squared_error(y_test, preds))
         r2   = r2_score(y_test, preds)
 
-        metrics = {"mae": round(mae, 2), "rmse": round(rmse, 2), "r2": round(r2, 4)}
+        # R2 on RETURN — this is the honest metric; R2 on price is inflated
+        # because tomorrow's price is almost always close to today's price.
+        r2_return = r2_score(y_ret_test, pred_ret)
+
+        # Naive baseline: "tomorrow's price = today's price" (zero-change prediction)
+        naive_preds = test_df["Close"].values
+        naive_mae   = mean_absolute_error(y_test, naive_preds)
+        naive_rmse  = np.sqrt(mean_squared_error(y_test, naive_preds))
+
+        # Directional accuracy: % of days the model correctly called Up vs Down
+        # Model direction: sign of predicted return
+        # Actual direction: sign of actual next-day return
+        model_up  = pred_ret > 0
+        actual_up = y_ret_test > 0
+        dir_acc   = float(np.mean(model_up == actual_up) * 100)
+
+        metrics = {
+            # existing keys (kept intact so existing UI doesn't break)
+            "mae":  round(mae,  2),
+            "rmse": round(rmse, 2),
+            "r2":   round(r2,   4),
+            # new keys added in Phase 3
+            "r2_return":           round(r2_return, 4),
+            "naive_mae":           round(naive_mae,  2),
+            "naive_rmse":          round(naive_rmse, 2),
+            "directional_accuracy": round(dir_acc,  1),
+        }
     else:
-        metrics = {"mae": 0.0, "rmse": 0.0, "r2": 0.0}
+        metrics = {
+            "mae": 0.0, "rmse": 0.0, "r2": 0.0,
+            "r2_return": 0.0, "naive_mae": 0.0, "naive_rmse": 0.0,
+            "directional_accuracy": 0.0,
+        }
 
     return {
         "symbol":          symbol.upper(),
@@ -270,15 +312,29 @@ def get_history_with_predictions(
     result = []
     for _, row in recent.iterrows():
         pred = row["PredictedForToday"]
+
+        # Helper: return None for NaN values (JSON-serialisable and chart-safe)
+        def _safe(val):
+            """Converts NaN to None so the chart can skip missing data points."""
+            return None if pd.isna(val) else round(float(val), 2)
+
         result.append({
-            "date":      row["Date"].strftime("%Y-%m-%d"),
-            "open":      round(float(row["Open"]), 2),
-            "high":      round(float(row["High"]), 2),
-            "low":       round(float(row["Low"]), 2),
-            "actual":    round(float(row["Close"]), 2),
-            "predicted": None if pd.isna(pred) else round(float(pred), 2),
-            "sma20":     round(float(row["SMA20"]), 2),
-            "sma50":     round(float(row["SMA50"]), 2),
+            # --- existing keys (never remove or rename) ---
+            "date":        row["Date"].strftime("%Y-%m-%d"),
+            "open":        round(float(row["Open"]), 2),
+            "high":        round(float(row["High"]), 2),
+            "low":         round(float(row["Low"]), 2),
+            "actual":      round(float(row["Close"]), 2),
+            "predicted":   None if pd.isna(pred) else round(float(pred), 2),
+            "sma20":       round(float(row["SMA20"]), 2),
+            "sma50":       round(float(row["SMA50"]), 2),
+            # --- new keys added for the indicator chart (Phase 1) ---
+            "rsi":         _safe(row["RSI"]),
+            "macd":        _safe(row["MACD"]),
+            "macd_signal": _safe(row["MACD_Signal"]),
+            "macd_hist":   _safe(row["MACD_Hist"]),
+            "bb_upper":    _safe(row["BB_Upper"]),
+            "bb_lower":    _safe(row["BB_Lower"]),
         })
     return result
 

@@ -3,53 +3,80 @@ utils/watchlist.py
 ------------------
 Handles saving and loading the watchlist (list of stock symbols).
 
-The watchlist is stored as a simple JSON file: data/watchlist.json
-It looks like this:  ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
-
-Two functions:
-  load_watchlist()  -> reads the file and returns a Python list
-  save_watchlist()  -> takes a list and writes it back to the file
-
-Why JSON and not a database?
-  A watchlist is just a small list of strings. JSON is the simplest
-  possible storage — no setup needed, human-readable, and easy to debug.
+The watchlist is stored in st.session_state per browser session,
+with local JSON (data/watchlist.json) as a fallback for local persistence.
 """
 
 import json
 from pathlib import Path
 
 
-# Path to the watchlist file, relative to THIS file's location.
-# utils/watchlist.py lives in utils/, so we go up one level to reach
-# the project root, then into data/.
+# Path to the watchlist file, relative to this file's location.
 WATCHLIST_PATH = Path(__file__).parent.parent / "data" / "watchlist.json"
+
+
+def _is_streamlit_session() -> bool:
+    """Checks whether the code is running inside an active Streamlit runtime session."""
+    try:
+        from streamlit.runtime import exists
+        return bool(exists())
+    except Exception:
+        return False
+
+
+def _load_from_file() -> list:
+    """Reads watchlist from local JSON file if present."""
+    if not WATCHLIST_PATH.exists():
+        return []
+    try:
+        with open(WATCHLIST_PATH, "r") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_to_file(watchlist: list) -> None:
+    """Writes watchlist to local JSON file as a fallback."""
+    try:
+        WATCHLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(WATCHLIST_PATH, "w") as f:
+            json.dump(watchlist, f, indent=2)
+    except Exception:
+        pass
 
 
 def load_watchlist() -> list:
     """
-    Reads the watchlist JSON file and returns a list of stock symbols.
-    If the file doesn't exist yet, returns an empty list (safe default).
+    Reads the watchlist from st.session_state if in a Streamlit session.
+    Falls back to the local JSON file on initial load or outside Streamlit.
     """
-    if not WATCHLIST_PATH.exists():
-        # File not found — just start with an empty list
-        return []
+    if _is_streamlit_session():
+        try:
+            import streamlit as st
+            if "watchlist" not in st.session_state:
+                st.session_state["watchlist"] = _load_from_file()
+            return list(st.session_state["watchlist"])
+        except Exception:
+            pass
 
-    with open(WATCHLIST_PATH, "r") as f:
-        watchlist = json.load(f)
-
-    return watchlist
+    return _load_from_file()
 
 
 def save_watchlist(watchlist: list) -> None:
     """
-    Saves the given list of symbols back to the JSON file.
-    Creates the data/ folder if it doesn't exist yet.
-
-    watchlist: a Python list like ["RELIANCE.NS", "TCS.NS"]
+    Saves the watchlist to st.session_state for the current browser session.
+    Also writes to data/watchlist.json as fallback for local persistence.
     """
-    # Make sure the data/ folder exists (create it if not)
-    WATCHLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    clean_list = list(watchlist)
 
-    with open(WATCHLIST_PATH, "w") as f:
-        # indent=2 makes the JSON file readable (not one long line)
-        json.dump(watchlist, f, indent=2)
+    if _is_streamlit_session():
+        try:
+            import streamlit as st
+            st.session_state["watchlist"] = clean_list
+        except Exception:
+            pass
+
+    _save_to_file(clean_list)

@@ -19,7 +19,7 @@ import streamlit as st
 
 from ml_service.stock_utils import get_history_with_predictions, predict_next_close
 from utils.watchlist import load_watchlist, save_watchlist
-from utils.chart_helpers import build_chart
+from utils.chart_helpers import build_chart, build_indicator_chart
 
 
 # --- Page config ---
@@ -180,9 +180,15 @@ if st.session_state.chart_data is not None and st.session_state.prediction is no
 
     with m4:
         st.metric(
-            label="📐 Model R² Score",
+            label="📐 R² on Price",
             value=f"{pred['metrics']['r2']:.4f}",
-            help="R² = 1.0 is perfect. Above 0.95 is very good for financial data.",
+            help=(
+                "R² measures how much of the variance in tomorrow's price the model explains. "
+                "**This number is almost always very high (>0.95) for any stock model — "
+                "even the naive 'tomorrow = today' baseline gets R² ≈ 0.99.** "
+                "It is NOT a sign the model is useful for trading. "
+                "See 'R² on Return' below for the honest metric."
+            ),
         )
 
     # ── Prediction range ─────────────────────────────────────────────────────
@@ -193,10 +199,11 @@ if st.session_state.chart_data is not None and st.session_state.prediction is no
     upper_bound     = round(predicted_price + rmse, 2)
 
     st.info(
-        f"**Prediction range (± RMSE):** ₹{lower_bound:,.2f}  —  ₹{upper_bound:,.2f}\n\n"
-        f"The model's typical error (RMSE) is ₹{rmse:,.2f}, so the actual close "
-        f"tomorrow is likely to fall within this range. "
-        f"This is NOT a guaranteed trading signal — see **🤖 Model Info** for the full disclaimer."
+        f"**Prediction range (\u00b1 RMSE):** \u20b9{lower_bound:,.2f}  \u2014  \u20b9{upper_bound:,.2f}\n\n"
+        f"The model's typical error (RMSE) on this stock is \u20b9{rmse:,.2f}. "
+        f"This range is a **rough indication based on past error only** \u2014 "
+        f"the actual close tomorrow may fall anywhere, including well outside this range. "
+        f"This is NOT a guaranteed trading signal \u2014 see **\U0001f916 Model Info** for the full disclaimer."
     )
 
     st.divider()
@@ -214,6 +221,40 @@ if st.session_state.chart_data is not None and st.session_state.prediction is no
 
     fig = build_chart(st.session_state.chart_data, symbol, chart_type=chart_type)
     st.plotly_chart(fig, use_container_width=True)
+
+    # ── Technical Indicators expander ────────────────────────────────────────
+    # Renders only from session_state, so the expander opening/closing does
+    # NOT trigger a re-fetch from Yahoo Finance.
+    with st.expander("Technical indicators chart (RSI, MACD, Bollinger)"):
+        ind_fig = build_indicator_chart(st.session_state.chart_data, symbol)
+        st.plotly_chart(ind_fig, use_container_width=True)
+
+        st.caption(
+            "**Bollinger Bands** (top): price envelope based on 20-day SMA ± 2 standard deviations. "
+            "When price touches the upper band it may be overbought; lower band may indicate oversold.\n\n"
+            "**RSI** (middle): momentum indicator (0–100). "
+            "Above 70 = possibly overbought. Below 30 = possibly oversold.\n\n"
+            "**MACD** (bottom): difference between 12-day and 26-day EMA. "
+            "Green bars = MACD above signal (bullish momentum). Red bars = below signal (bearish)."
+        )
+
+    # ── CSV download ─────────────────────────────────────────────────────────
+    # Convert the chart data list-of-dicts to a DataFrame, then to CSV bytes.
+    # We build the CSV here so it is always in sync with what is displayed.
+    import pandas as pd  # already a dependency; import inside block to keep top clean
+
+    csv_df  = pd.DataFrame(st.session_state.chart_data)
+    csv_str = csv_df.to_csv(index=False)
+
+    st.download_button(
+        label="⬇️ Download data as CSV",
+        data=csv_str,
+        file_name=f"{symbol}_history.csv",
+        mime="text/csv",
+        help="Downloads the last 120 days of OHLCV data plus all computed indicators as a CSV file.",
+    )
+
+    st.divider()
 
     # ── Technical indicators row ─────────────────────────────────────────────
     st.subheader("Technical Indicators (Latest Day)")
@@ -245,21 +286,80 @@ if st.session_state.chart_data is not None and st.session_state.prediction is no
     # ── Model quality metrics row ─────────────────────────────────────────────
     st.subheader("Model Quality on This Stock (live test)")
     st.caption(
-        "Computed on the last 20% of the fetched data for this specific stock. "
-        "Lower RMSE/MAE = better. Higher R² = better."
+        "Computed on the last 20% of fetched data for this specific stock. "
+        "Each metric is shown alongside the **Naive baseline** (tomorrow = today) so you can "
+        "see whether the model actually improves on the simplest possible prediction."
     )
 
-    q1, q2, q3 = st.columns(3)
+    m = pred["metrics"]
 
-    with q1:
-        st.metric("MAE (₹)", f"₹{pred['metrics']['mae']:,.2f}",
-                  help="Average error in rupees. Easy to explain: 'on average off by ₹X'.")
-    with q2:
-        st.metric("RMSE (₹)", f"₹{rmse:,.2f}",
-                  help="Like MAE but penalises large errors more. Used for the prediction range above.")
-    with q3:
-        st.metric("R² Score", f"{pred['metrics']['r2']:.4f}",
-                  help="1.0 = perfect. 0 = no better than guessing the mean price.")
+    # Row A: MAE and RMSE — model vs naive side by side
+    st.markdown("**Error in price (\u20b9) \u2014 model vs naive baseline**")
+    qa1, qa2, qa3, qa4 = st.columns(4)
+
+    with qa1:
+        st.metric(
+            "MAE — Model", f"\u20b9{m['mae']:,.2f}",
+            help="Mean Absolute Error: average prediction error in rupees (model).",
+        )
+    with qa2:
+        st.metric(
+            "MAE — Naive", f"\u20b9{m['naive_mae']:,.2f}",
+            delta=f"{m['mae'] - m['naive_mae']:+.2f} vs naive",
+            delta_color="inverse",
+            help="Naive baseline: predict tomorrow = today. Negative delta means the model is WORSE.",
+        )
+    with qa3:
+        st.metric(
+            "RMSE — Model", f"\u20b9{m['rmse']:,.2f}",
+            help="Root Mean Squared Error (model). Penalises large errors more than MAE.",
+        )
+    with qa4:
+        st.metric(
+            "RMSE — Naive", f"\u20b9{m['naive_rmse']:,.2f}",
+            delta=f"{m['rmse'] - m['naive_rmse']:+.2f} vs naive",
+            delta_color="inverse",
+            help="RMSE for the naive baseline. Negative delta means the model is WORSE.",
+        )
+
+    # Row B: R2 scores and directional accuracy
+    st.markdown("**R\u00b2 and directional accuracy**")
+    qb1, qb2, qb3 = st.columns(3)
+
+    with qb1:
+        st.metric(
+            "R\u00b2 on Price",
+            f"{m['r2']:.4f}",
+            help=(
+                "Almost always close to 1.0 for any stock model, including the naive baseline. "
+                "High price R\u00b2 does NOT mean the model is good \u2014 it just means tomorrow's price "
+                "is very close to today's price (high autocorrelation)."
+            ),
+        )
+    with qb2:
+        st.metric(
+            "R\u00b2 on Return",
+            f"{m['r2_return']:.4f}",
+            help=(
+                "R\u00b2 computed on the predicted vs actual next-day RETURN (not price). "
+                "This is the honest metric. A value near 0 or negative means the model "
+                "explains essentially none of the day-to-day return variation. "
+                "This is typical and expected for short-term stock models."
+            ),
+        )
+    with qb3:
+        dir_acc = m.get("directional_accuracy", 0)
+        st.metric(
+            "Directional Accuracy",
+            f"{dir_acc:.1f}%",
+            delta=f"{dir_acc - 50:.1f}pp vs 50% coin flip",
+            delta_color="normal",
+            help=(
+                "% of test days where the model correctly predicted Up vs Down. "
+                "50% = random coin flip. A good model should consistently beat 50%. "
+                "Being close to 50% (or below) means the model has no real directional edge."
+            ),
+        )
 
     st.divider()
 

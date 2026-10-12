@@ -9,6 +9,12 @@ Indicators added:
   EMA20        — Exponential Moving Average, last 20 days (recent days weighted more)
   Trend_Signal — 1 if SMA20 > SMA50 (bullish), 0 otherwise
   RSI          — Relative Strength Index, 14-day period (momentum indicator)
+  MACD         — Moving Average Convergence/Divergence (12, 26, 9) [display only]
+  BB_Upper     — Bollinger Band upper (20-day SMA + 2 std)       [display only]
+  BB_Lower     — Bollinger Band lower (20-day SMA - 2 std)       [display only]
+
+NOTE: MACD and Bollinger Bands are NOT in FEATURES and are NOT model inputs.
+      They are computed only for the indicator chart shown on the Dashboard.
 
 What is RSI?
   RSI measures whether a stock is "overbought" (RSI > 70) or "oversold" (RSI < 30).
@@ -96,6 +102,73 @@ def add_rsi(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
 
     # Step 5: RSI formula
     df["RSI"] = 100 - (100 / (1 + rs))
+
+    return df
+
+
+def add_macd(
+    df: pd.DataFrame,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> pd.DataFrame:
+    """
+    Adds MACD (Moving Average Convergence/Divergence) columns to the DataFrame.
+
+    Why MACD?
+      MACD shows momentum: when the fast EMA crosses above the slow EMA it is
+      often read as a bullish signal (and vice-versa). It is a *display-only*
+      indicator here — it is NOT part of the model's FEATURES list.
+
+    Columns added:
+      MACD        = EMA(12) - EMA(26)
+      MACD_Signal = EMA(9) of MACD
+      MACD_Hist   = MACD - MACD_Signal  (the "histogram" bars)
+
+    The first ~26 rows will contain NaN (not enough history). That is fine
+    because we handle NaN in get_history_with_predictions().
+    """
+    # EMA of closing prices at two different speeds
+    ema_fast = df["Close"].ewm(span=fast, adjust=False).mean()
+    ema_slow = df["Close"].ewm(span=slow, adjust=False).mean()
+
+    df["MACD"]        = ema_fast - ema_slow
+    df["MACD_Signal"] = df["MACD"].ewm(span=signal, adjust=False).mean()
+    df["MACD_Hist"]   = df["MACD"] - df["MACD_Signal"]
+
+    return df
+
+
+def add_bollinger_bands(
+    df: pd.DataFrame,
+    window: int = 20,
+    num_std: float = 2.0,
+) -> pd.DataFrame:
+    """
+    Adds Bollinger Band columns to the DataFrame.
+
+    Why Bollinger Bands?
+      They show volatility. When price touches the upper band the stock may
+      be overbought; lower band may indicate oversold. Like MACD, these are
+      *display-only* and are NOT in FEATURES.
+
+    Columns added:
+      BB_Upper = SMA20 + (2 * rolling 20-day standard deviation)
+      BB_Lower = SMA20 - (2 * rolling 20-day standard deviation)
+
+    Note: SMA20 must already exist in df (add_indicators() computes it first).
+    If SMA20 is missing we compute it here as a fallback.
+    """
+    # Use existing SMA20 if available, otherwise compute on the fly
+    if "SMA20" not in df.columns:
+        sma = df["Close"].rolling(window=window).mean()
+    else:
+        sma = df["SMA20"]
+
+    rolling_std = df["Close"].rolling(window=window).std()
+
+    df["BB_Upper"] = sma + (num_std * rolling_std)
+    df["BB_Lower"] = sma - (num_std * rolling_std)
 
     return df
 
