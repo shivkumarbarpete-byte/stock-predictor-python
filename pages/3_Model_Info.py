@@ -4,10 +4,13 @@ pages/3_Model_Info.py
 Shows how the models were trained and how well they perform.
 
 Sections:
-  1. Model comparison table  — Naive vs Linear Regression vs Random Forest
+  1. Model comparison table  — Naive vs LR vs RF vs XGBoost vs LightGBM
   2. Best model metrics      — shown as st.metric cards
-  3. Feature importance chart — Plotly bar chart from Random Forest
-  4. Honest disclaimer       — stock prediction is hard; this is for learning
+  3. Directional accuracy    — bar chart with 50% coin-flip line
+  4. Walk-forward validation — 5-fold expanding window
+  5. Feature importance charts — RF and XGBoost
+  6. Hyperparameter tuning results
+  7. Honest disclaimer       — stock prediction is hard; this is for learning
 
 Where does the data come from?
   metrics.json (written by train_model.py). We read it here so there's no
@@ -21,7 +24,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # Import the path to metrics.json from the central config
-from ml_service.config import METRICS_PATH
+from ml_service.config import METRICS_PATH, MODEL_DISPLAY_NAMES
 from ml_service.validation import run_walk_forward_validation
 
 # --- Page config ---
@@ -139,7 +142,7 @@ with b3:
         help="R² on price. High price R² is expected because tomorrow's price is close to today's.",
     )
 
-# ── Directional accuracy for LR and RF vs 50% coin-flip line ──
+# ── Directional accuracy for all ML models vs 50% coin-flip line ──
 st.markdown("---")
 st.subheader("🎯 Directional Accuracy vs 50% Coin-Flip Line")
 st.caption(
@@ -148,66 +151,79 @@ st.caption(
 )
 
 extra_m = metrics_data.get("extra_metrics", {})
-lr_dir = extra_m.get("lr", {}).get("dir_acc")
-rf_dir = extra_m.get("rf", {}).get("dir_acc")
-lr_dir_pct = (lr_dir * 100) if lr_dir is not None else 0.0
-rf_dir_pct = (rf_dir * 100) if rf_dir is not None else 0.0
 
-col_d1, col_d2, col_d3 = st.columns(3)
-with col_d1:
+# Build lists of model names, accuracies and colors dynamically
+model_keys_for_dir = ["lr", "rf", "xgb", "lgbm"]
+dir_colors = {"lr": "#3B82F6", "rf": "#10B981", "xgb": "#F59E0B", "lgbm": "#8B5CF6"}
+
+dir_names = []
+dir_values = []
+dir_chart_colors = []
+
+# Show coin-flip metric first
+col_dir_items = [st.columns(min(len(model_keys_for_dir) + 1, 5))]
+col_idx = 0
+
+# Display coin-flip baseline
+with col_dir_items[0][col_idx]:
     st.metric(
         "🪙 Coin-Flip Baseline",
         "50.0%",
         help="Pure random guessing baseline.",
     )
-with col_d2:
-    delta_lr = lr_dir_pct - 50.0
-    st.metric(
-        "Linear Regression",
-        f"{lr_dir_pct:.1f}%",
-        delta=f"{delta_lr:+.1f}pp vs coin flip",
-        delta_color="normal" if delta_lr >= 0 else "inverse",
-        help="Test-set directional accuracy for Linear Regression.",
-    )
-with col_d3:
-    delta_rf = rf_dir_pct - 50.0
-    st.metric(
-        "Random Forest",
-        f"{rf_dir_pct:.1f}%",
-        delta=f"{delta_rf:+.1f}pp vs coin flip",
-        delta_color="normal" if delta_rf >= 0 else "inverse",
-        help="Test-set directional accuracy for Random Forest.",
-    )
+    col_idx += 1
+
+for key in model_keys_for_dir:
+    if key in extra_m and extra_m[key].get("dir_acc") is not None:
+        label = MODEL_DISPLAY_NAMES.get(key, key)
+        dir_pct = extra_m[key]["dir_acc"] * 100
+        delta = dir_pct - 50.0
+
+        dir_names.append(label)
+        dir_values.append(dir_pct)
+        dir_chart_colors.append(dir_colors.get(key, "#6B7280"))
+
+        if col_idx < len(col_dir_items[0]):
+            with col_dir_items[0][col_idx]:
+                st.metric(
+                    label,
+                    f"{dir_pct:.1f}%",
+                    delta=f"{delta:+.1f}pp vs coin flip",
+                    delta_color="normal" if delta >= 0 else "inverse",
+                    help=f"Test-set directional accuracy for {label}.",
+                )
+                col_idx += 1
 
 # Visual Plotly chart with 50% coin-flip reference line
-fig_dir = go.Figure()
-fig_dir.add_trace(go.Bar(
-    x=["Linear Regression", "Random Forest"],
-    y=[lr_dir_pct, rf_dir_pct],
-    marker_color=["#3B82F6", "#10B981"],
-    text=[f"{lr_dir_pct:.1f}%", f"{rf_dir_pct:.1f}%"],
-    textposition="outside",
-    width=0.35,
-    name="Model Accuracy",
-))
-fig_dir.add_hline(
-    y=50,
-    line_dash="dash",
-    line_color="#EF4444",
-    line_width=2,
-    annotation_text="50% Coin-Flip Line",
-    annotation_position="top right",
-    annotation_font_color="#EF4444",
-)
-fig_dir.update_layout(
-    title="Directional Accuracy on Held-Out Test Set",
-    yaxis=dict(title="Accuracy (%)", range=[0, 100]),
-    xaxis=dict(title="Model"),
-    template="plotly_white",
-    height=320,
-    margin=dict(l=60, r=40, t=50, b=40),
-)
-st.plotly_chart(fig_dir, use_container_width=True)
+if dir_names:
+    fig_dir = go.Figure()
+    fig_dir.add_trace(go.Bar(
+        x=dir_names,
+        y=dir_values,
+        marker_color=dir_chart_colors,
+        text=[f"{v:.1f}%" for v in dir_values],
+        textposition="outside",
+        width=0.3,
+        name="Model Accuracy",
+    ))
+    fig_dir.add_hline(
+        y=50,
+        line_dash="dash",
+        line_color="#EF4444",
+        line_width=2,
+        annotation_text="50% Coin-Flip Line",
+        annotation_position="top right",
+        annotation_font_color="#EF4444",
+    )
+    fig_dir.update_layout(
+        title="Directional Accuracy on Held-Out Test Set",
+        yaxis=dict(title="Accuracy (%)", range=[0, 100]),
+        xaxis=dict(title="Model"),
+        template="plotly_white",
+        height=350,
+        margin=dict(l=60, r=40, t=50, b=40),
+    )
+    st.plotly_chart(fig_dir, use_container_width=True)
 
 st.divider()
 
@@ -229,31 +245,41 @@ with st.spinner("Loading walk-forward validation results..."):
 # Build a formatted copy with summary row
 display_wf = wf_raw.copy()
 
-# Add an Average summary row
+# Build average row dynamically based on available columns
 avg_row = {
     "Fold": "**Average (5 Folds)**",
     "Test Period": "All test windows",
     "Train / Test Size": "—",
-    "Naive Return MAE": display_wf["Naive Return MAE"].mean(),
-    "LR Return MAE": display_wf["LR Return MAE"].mean(),
-    "RF Return MAE": display_wf["RF Return MAE"].mean(),
-    "LR Dir. Accuracy": display_wf["LR Dir. Accuracy"].mean(),
-    "RF Dir. Accuracy": display_wf["RF Dir. Accuracy"].mean(),
 }
+
+# Add numeric columns to average
+numeric_cols = [c for c in display_wf.columns if "MAE" in c or "Accuracy" in c]
+for col in numeric_cols:
+    if col in display_wf.columns:
+        avg_row[col] = display_wf[col].mean()
+
 display_wf = pd.concat([display_wf, pd.DataFrame([avg_row])], ignore_index=True)
 
 # Format floats for clean presentation
-formatted_wf = pd.DataFrame({
+format_dict = {
     "Fold": display_wf["Fold"],
     "Test Window": display_wf["Test Period"],
     "Train / Test Size": display_wf["Train / Test Size"],
-    "Naive Return MAE": display_wf["Naive Return MAE"].apply(lambda v: f"{v:.4f} ({v*100:.2f}%)"),
-    "LR Return MAE": display_wf["LR Return MAE"].apply(lambda v: f"{v:.4f} ({v*100:.2f}%)"),
-    "RF Return MAE": display_wf["RF Return MAE"].apply(lambda v: f"{v:.4f} ({v*100:.2f}%)"),
-    "LR Dir. Acc": display_wf["LR Dir. Accuracy"].apply(lambda v: f"{v:.1f}%"),
-    "RF Dir. Acc": display_wf["RF Dir. Accuracy"].apply(lambda v: f"{v:.1f}%"),
-})
+}
 
+for col in display_wf.columns:
+    if "MAE" in col:
+        short = col.replace(" Return MAE", " MAE")
+        format_dict[short] = display_wf[col].apply(
+            lambda v: f"{v:.4f} ({v*100:.2f}%)" if pd.notna(v) else "—"
+        )
+    elif "Accuracy" in col:
+        short = col.replace(" Dir. Accuracy", " Dir. Acc")
+        format_dict[short] = display_wf[col].apply(
+            lambda v: f"{v:.1f}%" if pd.notna(v) else "—"
+        )
+
+formatted_wf = pd.DataFrame(format_dict)
 st.dataframe(formatted_wf, use_container_width=True, hide_index=True)
 
 # Plain-English "How to read these results" box
@@ -261,7 +287,7 @@ st.info(
     "💡 **How to read these results (Interview Takeaway):**\n\n"
     "1. **The models do not beat the naive baseline:** Across folds, the Naive baseline "
     "(`tomorrow's return = 0`, or `tomorrow = today`) consistently achieves a Return MAE equal to or lower "
-    "than both Linear Regression and Random Forest.\n"
+    "than the ML models.\n"
     "2. **Directional accuracy hovers near ~50% (coin flip):** The models cannot reliably call whether "
     "tomorrow will be an Up or Down day better than random chance.\n"
     "3. **Why this is completely expected:** In liquid financial markets, day-to-day returns approximate a random walk "
@@ -272,53 +298,63 @@ st.info(
 st.divider()
 
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# SECTION 3 — Feature importance chart (Random Forest)
+# SECTION 4 — Feature importance charts (RF and XGBoost)
 # ──────────────────────────────────────────────────────────────────────────────
 
-st.subheader("🌲 Random Forest — Feature Importances")
+st.subheader("🌲 Feature Importances")
 st.markdown(
     """
-    Random Forest assigns an **importance score** to each input feature.
+    Tree-based models assign an **importance score** to each input feature.
     The score shows how much that feature helped improve predictions (all scores add up to 1.0).
 
     **How to read this chart in an interview:**
-    > *"Close price dominates because stock prices are highly autocorrelated — yesterday's
-    > price is the strongest predictor of tomorrow's price. The technical indicators
-    > contribute smaller but non-zero importance, confirming they add signal."*
+    > *"RSI and the moving-average ratios dominate because stock prices are highly
+    > autocorrelated. The Sentiment_Score feature captures news-driven market mood,
+    > providing an additional signal beyond pure technical indicators."*
     """
 )
 
-fi = metrics_data.get("feature_importances", {})
+fi_rf = metrics_data.get("feature_importances", {})
+fi_xgb = metrics_data.get("xgb_feature_importances", {})
 
-if fi:
-    # Sort features from most to least important
-    features_sorted     = sorted(fi.keys(), key=lambda k: fi[k], reverse=True)
-    importances_sorted  = [fi[f] for f in features_sorted]
+fi_tabs = []
+fi_data = []
+if fi_rf:
+    fi_tabs.append("Random Forest")
+    fi_data.append(fi_rf)
+if fi_xgb:
+    fi_tabs.append("XGBoost")
+    fi_data.append(fi_xgb)
 
-    # Plotly horizontal bar chart
-    fig_fi = go.Figure(go.Bar(
-        x=importances_sorted,
-        y=features_sorted,
-        orientation="h",                        # horizontal bars
-        marker_color=["#22C55E" if f == features_sorted[0] else "#60A5FA"
-                      for f in features_sorted],  # top feature in green, rest in blue
-        text=[f"{v:.4f}" for v in importances_sorted],
-        textposition="outside",
-    ))
+if fi_tabs:
+    tabs = st.tabs(fi_tabs)
+    for tab, fi, tab_name in zip(tabs, fi_data, fi_tabs):
+        with tab:
+            features_sorted = sorted(fi.keys(), key=lambda k: fi[k], reverse=True)
+            importances_sorted = [fi[f] for f in features_sorted]
 
-    fig_fi.update_layout(
-        title="Feature Importances (Random Forest)",
-        xaxis_title="Importance Score",
-        yaxis_title="Feature",
-        template="plotly_white",
-        height=350,
-        margin=dict(l=80, r=60, t=50, b=40),
-        xaxis=dict(range=[0, max(importances_sorted) * 1.2]),  # extra space for labels
-    )
+            fig_fi = go.Figure(go.Bar(
+                x=importances_sorted,
+                y=features_sorted,
+                orientation="h",
+                marker_color=["#22C55E" if f == features_sorted[0] else "#60A5FA"
+                              for f in features_sorted],
+                text=[f"{v:.4f}" for v in importances_sorted],
+                textposition="outside",
+            ))
 
-    st.plotly_chart(fig_fi, use_container_width=True)
+            fig_fi.update_layout(
+                title=f"Feature Importances ({tab_name})",
+                xaxis_title="Importance Score",
+                yaxis_title="Feature",
+                template="plotly_white",
+                height=350,
+                margin=dict(l=120, r=60, t=50, b=40),
+                xaxis=dict(range=[0, max(importances_sorted) * 1.2]),
+            )
+
+            st.plotly_chart(fig_fi, use_container_width=True)
 else:
     st.info("Feature importances not found in metrics.json. Re-run train_model.py.")
 
@@ -326,7 +362,31 @@ st.divider()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SECTION 4 — Plain-English explanation of what this model can and cannot do
+# SECTION 5 — Hyperparameter Tuning Results
+# ──────────────────────────────────────────────────────────────────────────────
+
+best_params = metrics_data.get("best_params", {})
+
+if best_params:
+    st.subheader("⚙️ Hyperparameter Tuning Results")
+    st.caption(
+        "Best hyperparameters found via RandomizedSearchCV with TimeSeriesSplit cross-validation. "
+        "These were selected to minimize MSE on time-ordered validation folds."
+    )
+
+    param_tabs = st.tabs([MODEL_DISPLAY_NAMES.get(k, k) for k in best_params.keys()])
+    for tab, (model_key, params) in zip(param_tabs, best_params.items()):
+        with tab:
+            param_df = pd.DataFrame(
+                [{"Parameter": k, "Best Value": str(v)} for k, v in params.items()]
+            )
+            st.dataframe(param_df, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SECTION 6 — Plain-English explanation of what this model can and cannot do
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.subheader("⚠️ Honest Disclaimer — Read Before Using")
@@ -344,8 +404,8 @@ st.markdown(
 
     - **High autocorrelation**: Stock prices tomorrow are very close to today's price.
       Even the naive baseline (tomorrow = today) gets a high R². This inflates our metrics.
-    - **No external data**: The model only sees price history. News, fundamentals,
-      and macro events are invisible to it.
+    - **No external data**: The model only sees price history and a current-day sentiment
+      snapshot. News, fundamentals, and macro events are only partially captured.
     - **Regime changes**: A model trained on 2022–2024 data may behave differently in a
       market crisis or bull run it has never seen.
     - **This project's purpose**: To learn and demonstrate proper ML practices —
@@ -355,7 +415,9 @@ st.markdown(
     - ✅ Avoiding data leakage with a time-ordered train/test split
     - ✅ Always comparing against a naive baseline before claiming "our model is good"
     - ✅ Reporting three metrics (RMSE, MAE, R²) instead of just one
-    - ✅ Feature engineering: using domain knowledge (SMA, EMA, RSI) to add signal
-    - ✅ Model comparison: Linear Regression vs Random Forest
+    - ✅ Feature engineering: using domain knowledge (SMA, EMA, RSI, Sentiment)
+    - ✅ Model comparison: LR vs Random Forest vs XGBoost vs LightGBM
+    - ✅ Automated hyperparameter tuning with RandomizedSearchCV
+    - ✅ Walk-forward validation across multiple time windows
     """
 )

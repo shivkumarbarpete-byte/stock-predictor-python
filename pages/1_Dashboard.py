@@ -3,10 +3,10 @@ pages/1_Dashboard.py
 --------------------
 Main analysis page. The user types a stock symbol, picks a model, clicks Fetch.
 
-New in Steps 8b / 9b:
-  - Model selectbox: choose Linear Regression or Random Forest
+v4 additions:
+  - Model selectbox: choose from LR, RF, XGBoost, LightGBM
   - Prediction range: shows ₹X ± ₹RMSE so users understand uncertainty
-  - RSI added to the indicators row
+  - Live sentiment score shown alongside indicators
   - If model choice changes, we clear stale results and ask user to re-fetch
 
 How session_state works in Streamlit:
@@ -18,7 +18,10 @@ How session_state works in Streamlit:
 import pandas as pd
 import streamlit as st
 
-from ml_service.stock_utils import get_history_with_predictions, predict_next_close
+from ml_service.stock_utils import (
+    get_history_with_predictions, predict_next_close, get_available_models,
+)
+from ml_service.config import MODEL_DISPLAY_NAMES
 from ml_service.news_sentiment import analyze_news_sentiment
 from ml_service.risk_reward import render_risk_reward_widget
 from ml_service.pdf_report import generate_dashboard_pdf
@@ -66,18 +69,29 @@ with col_sym:
     ).upper().strip()
 
 with col_model:
-    # Let the user pick which trained model to use for predictions
+    # Build model options from available trained models (only show those with .pkl files)
+    available_keys = get_available_models()
+    if not available_keys:
+        # Fallback: show all model names even if not trained yet
+        available_keys = list(MODEL_DISPLAY_NAMES.keys())
+
+    model_options = [MODEL_DISPLAY_NAMES.get(k, k) for k in available_keys]
+    # Reverse lookup: display name -> key
+    _display_to_key = {MODEL_DISPLAY_NAMES.get(k, k): k for k in available_keys}
+
     model_choice = st.selectbox(
         label="Prediction Model",
-        options=["Linear Regression", "Random Forest"],
+        options=model_options,
         index=0,
         help=(
-            "Linear Regression: simple, fast, easy to explain.\n"
-            "Random Forest: 100 decision trees averaged — usually more accurate."
+            "**Linear Regression:** simple, fast, easy to explain.\n"
+            "**Random Forest:** ensemble of decision trees — usually more robust.\n"
+            "**XGBoost:** gradient boosted trees — often the best performer.\n"
+            "**LightGBM:** fast gradient boosting — great for large datasets."
         ),
     )
     # Convert the display name to the short key used inside stock_utils.py
-    model_name = "lr" if model_choice == "Linear Regression" else "rf"
+    model_name = _display_to_key.get(model_choice, "lr")
 
 with col_btn:
     st.write("")  # vertical space to align button with inputs
@@ -176,7 +190,7 @@ if st.session_state.chart_data is not None and st.session_state.prediction is no
     rmse   = pred["metrics"]["rmse"]           # used to compute the prediction range
 
     # Human-readable model name for display
-    model_label = "Linear Regression" if pred["model_used"] == "lr" else "Random Forest"
+    model_label = pred.get("model_display", MODEL_DISPLAY_NAMES.get(pred["model_used"], pred["model_used"]))
 
     st.subheader(f"Results for {symbol}  ·  Model: {model_label}")
 
@@ -256,6 +270,14 @@ if st.session_state.chart_data is not None and st.session_state.prediction is no
 
         with s_col4:
             st.metric("🔴 Negative Stories", f"{counts.get('negative', 0)} / {counts.get('total', 0)}")
+
+        # Show the sentiment score fed into the model
+        sent_score = pred.get("sentiment_score", 0.0)
+        sent_label = "Bullish" if sent_score > 0.05 else ("Bearish" if sent_score < -0.05 else "Neutral")
+        st.caption(
+            f"💡 **Sentiment Score used as model feature:** `{sent_score:+.3f}` ({sent_label}) — "
+            f"this value is fed into the ML model alongside technical indicators."
+        )
 
         # AI summary narrative card
         st.info(f"🤖 **AI Summary:** {s_data.get('ai_summary', '')}")

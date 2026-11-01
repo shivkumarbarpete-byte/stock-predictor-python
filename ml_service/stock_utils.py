@@ -5,15 +5,18 @@ All reusable ML logic - Streamlit pages import from here.
 
 Five things this file does:
   1. fetch_stock_data()             -> download price history from Yahoo Finance
-  2. add_indicators()               -> compute SMA20, SMA50, EMA20, RSI + scale-free ratios
+  2. add_indicators()               -> compute SMA20, SMA50, EMA20, RSI + scale-free ratios + sentiment
   3. load_model(model_name)         -> load a saved .pkl model from disk
   4. predict_next_close(symbol, model_name) -> full pipeline, returns a prediction dict
   5. get_history_with_predictions() -> actual + predicted prices for the chart
 
-IMPORTANT - v3 models predict the next-day RETURN, not the price:
+v4: supports 4 models (lr, rf, xgb, lgbm) and includes Sentiment_Score feature.
+
+IMPORTANT - v3+ models predict the next-day RETURN, not the price:
   predicted_price = Close * (1 + predicted_return)
   FEATURES (from config.py) are scale-free: SMA20_ratio, SMA50_ratio,
-  EMA20_ratio, RSI. That is why one model now works for any stock price level.
+  EMA20_ratio, RSI, Sentiment_Score. That is why one model now works for
+  any stock price level.
 """
 
 import json
@@ -29,13 +32,19 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 #   "from ml_service.config" works when Streamlit runs from the project root.
 #   "from config" works when you run this script directly (python ml_service/stock_utils.py).
 try:
-    from ml_service.config import FEATURES, MODEL_LR_PATH, MODEL_RF_PATH, METRICS_PATH
+    from ml_service.config import (
+        FEATURES, MODEL_LR_PATH, MODEL_RF_PATH, MODEL_XGB_PATH,
+        MODEL_LGB_PATH, METRICS_PATH, MODEL_DISPLAY_NAMES,
+    )
     from ml_service.compute_indicators import add_rsi, add_macd, add_bollinger_bands
-    from ml_service.features import add_scale_free_features
+    from ml_service.features import add_scale_free_features, add_sentiment_feature, compute_live_sentiment_score
 except ImportError:
-    from config import FEATURES, MODEL_LR_PATH, MODEL_RF_PATH, METRICS_PATH
+    from config import (
+        FEATURES, MODEL_LR_PATH, MODEL_RF_PATH, MODEL_XGB_PATH,
+        MODEL_LGB_PATH, METRICS_PATH, MODEL_DISPLAY_NAMES,
+    )
     from compute_indicators import add_rsi, add_macd, add_bollinger_bands
-    from features import add_scale_free_features
+    from features import add_scale_free_features, add_sentiment_feature, compute_live_sentiment_score
 
 
 # -----------------------------------------------------------------------------
@@ -91,14 +100,15 @@ def fetch_stock_data(symbol: str, period: str = "2y", interval: str = "1d") -> p
 # 2. INDICATORS
 # -----------------------------------------------------------------------------
 
-def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def add_indicators(df: pd.DataFrame, symbol: str = "") -> pd.DataFrame:
     """
-    Adds SMA20, SMA50, EMA20, RSI, scale-free ratio columns, plus the
-    display-only indicators MACD and Bollinger Bands.
+    Adds SMA20, SMA50, EMA20, RSI, scale-free ratio columns, sentiment score,
+    plus the display-only indicators MACD and Bollinger Bands.
     Works on a COPY so the original is never modified.
 
-    Model FEATURES (SMA20_ratio, SMA50_ratio, EMA20_ratio, RSI) are unchanged.
-    MACD and Bollinger Bands are computed here so they are available in
+    Model FEATURES (SMA20_ratio, SMA50_ratio, EMA20_ratio, RSI, Sentiment_Score)
+    are all computed here.
+    MACD and Bollinger Bands are computed so they are available in
     get_history_with_predictions() for the indicator chart on the Dashboard.
 
     After this, the first ~50 rows will have NaN values (SMA50 needs 50 rows
@@ -119,6 +129,13 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # Scale-free ratios (same function train_model.py uses)
     df = add_scale_free_features(df)
 
+    # Sentiment score — live fetch if symbol provided, else neutral 0.0
+    if symbol:
+        sentiment_score = compute_live_sentiment_score(symbol)
+    else:
+        sentiment_score = 0.0
+    df = add_sentiment_feature(df, sentiment_score=sentiment_score)
+
     # Display-only indicators: MACD and Bollinger Bands
     # These are NOT in FEATURES and do not affect the model at all.
     df = add_macd(df, fast=12, slow=26, signal=9)
@@ -131,25 +148,32 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # 3. MODEL LOADING  (loads once, then caches in memory)
 # -----------------------------------------------------------------------------
 
-# _models is a dictionary: {"lr": <model object>, "rf": <model object>}
+# _models is a dictionary: {"lr": <model object>, "rf": <model object>, ...}
 # We load each model only the first time it is requested.
 _models = {}
+
+# Map model keys to their file paths
+_MODEL_PATHS = {
+    "lr":   MODEL_LR_PATH,
+    "rf":   MODEL_RF_PATH,
+    "xgb":  MODEL_XGB_PATH,
+    "lgbm": MODEL_LGB_PATH,
+}
 
 
 def load_model(model_name: str = "lr"):
     """
     Loads the trained model from disk. Returns the cached version on repeat calls.
 
-    model_name : "lr" for Linear Regression, "rf" for Random Forest
+    model_name : "lr" for Linear Regression, "rf" for Random Forest,
+                 "xgb" for XGBoost, "lgbm" for LightGBM
     The model files live inside ml_service/ (defined in config.py).
     """
     if model_name not in _models:
-        if model_name == "lr":
-            path = MODEL_LR_PATH
-        elif model_name == "rf":
-            path = MODEL_RF_PATH
-        else:
-            raise ValueError(f"Unknown model '{model_name}'. Choose 'lr' or 'rf'.")
+        path = _MODEL_PATHS.get(model_name)
+        if path is None:
+            valid = ", ".join(f"'{k}'" for k in _MODEL_PATHS)
+            raise ValueError(f"Unknown model '{model_name}'. Choose from: {valid}")
 
         if not path.exists():
             raise FileNotFoundError(
@@ -162,6 +186,18 @@ def load_model(model_name: str = "lr"):
     return _models[model_name]
 
 
+def get_available_models() -> list:
+    """
+    Returns a list of model keys whose .pkl files exist on disk.
+    Used by the UI to show only models that have been trained.
+    """
+    available = []
+    for key, path in _MODEL_PATHS.items():
+        if path.exists():
+            available.append(key)
+    return available
+
+
 # -----------------------------------------------------------------------------
 # 4. PREDICTION
 # -----------------------------------------------------------------------------
@@ -169,14 +205,14 @@ def load_model(model_name: str = "lr"):
 def predict_next_close(symbol: str, model_name: str = "lr") -> dict:
     """
     Full pipeline for one prediction:
-      fetch -> add indicators -> drop NaN rows -> load model -> predict RETURN
-      -> convert to price.
+      fetch -> add indicators (with live sentiment) -> drop NaN rows
+      -> load model -> predict RETURN -> convert to price.
 
     Returns a dictionary with prediction, model quality metrics, and indicators.
-    The model_name parameter lets the caller choose "lr" or "rf".
+    The model_name parameter lets the caller choose "lr", "rf", "xgb", or "lgbm".
     """
     df = fetch_stock_data(symbol, period="1y")   # 1 year gives enough rows for SMA50 + RSI
-    df = add_indicators(df)
+    df = add_indicators(df, symbol=symbol)       # includes live sentiment
     df = df.dropna(subset=FEATURES)              # drop the first ~50 rows with NaN
 
     if df.empty:
@@ -251,6 +287,9 @@ def predict_next_close(symbol: str, model_name: str = "lr") -> dict:
             "directional_accuracy": 0.0,
         }
 
+    # Get display name for the model
+    model_display = MODEL_DISPLAY_NAMES.get(model_name, model_name)
+
     return {
         "symbol":          symbol.upper(),
         "last_date":       latest["Date"].strftime("%Y-%m-%d"),
@@ -260,6 +299,8 @@ def predict_next_close(symbol: str, model_name: str = "lr") -> dict:
         "change_percent":  round(change_pct, 2),
         "direction":       "UP" if change > 0 else "DOWN",
         "model_used":      model_name,
+        "model_display":   model_display,
+        "sentiment_score": round(float(latest.get("Sentiment_Score", 0.0)), 3),
         "indicators": {
             "SMA20": round(float(latest["SMA20"]), 2),
             "SMA50": round(float(latest["SMA50"]), 2),
@@ -292,7 +333,7 @@ def get_history_with_predictions(
       prediction to align it visually with the day it is predicting.
     """
     df = fetch_stock_data(symbol, period="2y")
-    df = add_indicators(df)
+    df = add_indicators(df, symbol=symbol)
     df = df.dropna(subset=FEATURES).reset_index(drop=True)
 
     if df.empty:
@@ -328,7 +369,7 @@ def get_history_with_predictions(
             "predicted":   None if pd.isna(pred) else round(float(pred), 2),
             "sma20":       round(float(row["SMA20"]), 2),
             "sma50":       round(float(row["SMA50"]), 2),
-            # --- new keys added for the indicator chart (Phase 1) ---
+            # --- indicator chart keys ---
             "rsi":         _safe(row["RSI"]),
             "macd":        _safe(row["MACD"]),
             "macd_signal": _safe(row["MACD_Signal"]),

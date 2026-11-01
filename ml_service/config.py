@@ -28,17 +28,29 @@ ML_DIR = Path(__file__).parent
 
 
 # ---- Feature list ----
-# All features are SCALE-FREE (ratios / RSI), so the same model works for
-# a Rs 80 stock and a Rs 1300 stock. Raw "Close" is NOT a feature anymore.
+# All features are SCALE-FREE (ratios / RSI / sentiment score), so the same
+# model works for a Rs 80 stock and a Rs 1300 stock.
 # Order matters: must be the same during training AND during prediction.
-FEATURES = ["SMA20_ratio", "SMA50_ratio", "EMA20_ratio", "RSI"]
+# Sentiment_Score is the aggregated VADER polarity from recent news headlines
+# (range roughly -1 to +1, default 0.0 when news is unavailable).
+FEATURES = ["SMA20_ratio", "SMA50_ratio", "EMA20_ratio", "RSI", "Sentiment_Score"]
 
 # ---- Model file paths ----
 # v3 = scale-free models (predict next-day RETURN). Older v2/original .pkl
 # files are kept untouched.
-MODEL_LR_PATH = ML_DIR / "linear_regression_model_v3.pkl"
-MODEL_RF_PATH = ML_DIR / "random_forest_model_v3.pkl"
+MODEL_LR_PATH  = ML_DIR / "linear_regression_model_v3.pkl"
+MODEL_RF_PATH  = ML_DIR / "random_forest_model_v3.pkl"
+MODEL_XGB_PATH = ML_DIR / "xgboost_model_v3.pkl"
+MODEL_LGB_PATH = ML_DIR / "lightgbm_model_v3.pkl"
 
 # ---- Metrics file path ----
 # train_model.py writes here; pages/3_Model_Info.py reads from here.
 METRICS_PATH = ML_DIR / "metrics.json"
+
+# ---- Human-readable model names (key -> display label) ----
+MODEL_DISPLAY_NAMES = {
+    "lr":   "Linear Regression",
+    "rf":   "Random Forest",
+    "xgb":  "XGBoost",
+    "lgbm": "LightGBM",
+}
