@@ -302,7 +302,10 @@ def generate_backtest_pdf(
     rows = [
         ("Total Net Return", f"{s_m['total_return']:+.2f}%", f"{b_m['total_return']:+.2f}%", f"{s_m['total_return'] - b_m['total_return']:+.2f}%"),
         ("Annualized Return (CAGR)", f"{s_m['annualised_return']:+.2f}%", f"{b_m['annualised_return']:+.2f}%", f"{s_m['annualised_return'] - b_m['annualised_return']:+.2f}%"),
+        ("Sharpe Ratio (Rf=6%)", f"{s_m.get('sharpe_ratio', 0.0):.2f}", f"{b_m.get('sharpe_ratio', 0.0):.2f}", f"{s_m.get('sharpe_ratio', 0.0) - b_m.get('sharpe_ratio', 0.0):+.2f}"),
+        ("Sortino Ratio", f"{s_m.get('sortino_ratio', 0.0):.2f}", f"{b_m.get('sortino_ratio', 0.0):.2f}", f"{s_m.get('sortino_ratio', 0.0) - b_m.get('sortino_ratio', 0.0):+.2f}"),
         ("Maximum Drawdown", f"{s_m['max_drawdown']:.2f}%", f"{b_m['max_drawdown']:.2f}%", f"{s_m['max_drawdown'] - b_m['max_drawdown']:+.2f}%"),
+        ("Profit Factor", f"{s_m.get('profit_factor', 0.0):.2f}", f"{b_m.get('profit_factor', 0.0):.2f}", f"{s_m.get('profit_factor', 0.0) - b_m.get('profit_factor', 0.0):+.2f}"),
         ("Trades Executed", f"{s_m['trades']}", "1 (Buy & Hold)", f"{s_m['trades'] - 1:+d}"),
         ("Completed Round-Trips", f"{s_m['completed_trades']}", "1", f"{s_m['completed_trades'] - 1:+d}"),
         ("Trade Win Rate", f"{s_m['win_rate']:.1f}%", f"{b_m['win_rate']:.1f}% (up days)", f"{s_m['win_rate'] - b_m['win_rate']:+.1f}%"),
@@ -367,5 +370,81 @@ def generate_backtest_pdf(
         "3. Past performance does not guarantee future results."
     )
     pdf.multi_cell(190, 4, sanitize_text(disclaimers_text))
+
+    return bytes(pdf.output())
+
+
+def generate_watchlist_pdf(
+    watchlist_items: List[Dict],
+    portfolio_summary: Optional[Dict] = None,
+) -> bytes:
+    """
+    Generates a PDF document compiling the user's Watchlist & Portfolio tracking report.
+    """
+    pdf = StockPDFReport(
+        title_text="WATCHLIST & PORTFOLIO TRACKER REPORT",
+        subtitle_text=f"Total Monitored Stocks: {len(watchlist_items)}",
+    )
+    pdf.add_page()
+
+    # 1. Portfolio Valuation Summary (if shares entered)
+    if portfolio_summary and portfolio_summary.get("total_invested", 0.0) > 0:
+        pdf.draw_section_heading("1. PORTFOLIO HOLDINGS OVERVIEW")
+        pdf.draw_key_value("Total Invested Capital:", f"Rs. {portfolio_summary.get('total_invested', 0.0):,.2f}", width=95)
+        pdf.draw_key_value("Current Market Value:", f"Rs. {portfolio_summary.get('current_value', 0.0):,.2f}", width=95)
+        pdf.ln(6)
+
+        pnl = portfolio_summary.get("unrealized_pnl", 0.0)
+        pnl_pct = portfolio_summary.get("pnl_pct", 0.0)
+        pnl_label = f"Rs. {pnl:+,.2f} ({pnl_pct:+.2f}%)"
+        pdf.draw_key_value("Total Unrealized P&L:", pnl_label, width=95)
+        pdf.draw_key_value("Active Position Count:", f"{portfolio_summary.get('position_count', 0)} stocks", width=95)
+        pdf.ln(8)
+
+    # 2. Watchlist & Predictions Table
+    pdf.draw_section_heading("2. MONITORED STOCKS & MACHINE LEARNING PREDICTIONS")
+
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_fill_color(226, 232, 240)
+    pdf.cell(30, 7, sanitize_text("Symbol"), fill=True)
+    pdf.cell(30, 7, sanitize_text("Current Close"), fill=True, align="R")
+    pdf.cell(35, 7, sanitize_text("Predicted Tomorrow"), fill=True, align="R")
+    pdf.cell(30, 7, sanitize_text("Expected Change"), fill=True, align="R")
+    pdf.cell(30, 7, sanitize_text("Signal & Trend"), fill=True, align="C")
+    pdf.cell(35, 7, sanitize_text("RSI (14)"), fill=True, align="C", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Helvetica", "", 8)
+    fill = False
+    for item in watchlist_items:
+        pdf.set_fill_color(248, 250, 252) if fill else pdf.set_fill_color(255, 255, 255)
+        sym = item.get("symbol", "N/A")
+        curr = f"Rs. {item.get('current_close', 0.0):,.2f}"
+        pred = f"Rs. {item.get('predicted_close', 0.0):,.2f}"
+        chg = f"{item.get('predicted_change_pct', 0.0):+.2f}%"
+        sig = item.get("direction", "UP")
+        rsi_str = f"{item.get('rsi', 0.0):.1f}"
+
+        pdf.cell(30, 6, sanitize_text(sym), fill=True)
+        pdf.cell(30, 6, sanitize_text(curr), fill=True, align="R")
+        pdf.cell(35, 6, sanitize_text(pred), fill=True, align="R")
+        pdf.cell(30, 6, sanitize_text(chg), fill=True, align="R")
+        pdf.cell(30, 6, sanitize_text(sig), fill=True, align="C")
+        pdf.cell(35, 6, sanitize_text(rsi_str), fill=True, align="C", new_x="LMARGIN", new_y="NEXT")
+        fill = not fill
+
+    pdf.ln(8)
+
+    # 3. Disclaimers
+    pdf.draw_section_heading("3. DISCLAIMERS & RESEARCH NOTES")
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_text_color(71, 85, 105)
+    pdf.multi_cell(
+        190, 4,
+        sanitize_text(
+            "This Watchlist and Portfolio Tracker report aggregates real-time technical indicators and next-day return "
+            "forecasts. Stock markets are subject to volatility and regime changes. Forecasts are model-estimated and "
+            "should not be treated as investment advice."
+        )
+    )
 
     return bytes(pdf.output())

@@ -29,6 +29,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from ml_service.stock_utils import fetch_stock_data
+from ml_service.validation import validate_ticker_symbol
+from ml_service.risk_reward import compute_max_drawdown
 
 
 # --- Page config ---
@@ -55,27 +57,19 @@ st.divider()
 def parse_symbols(raw_input: str) -> tuple:
     """
     Splits the raw text input into individual symbols and validates them.
-
-    Why separate this from the UI?
-      Validation logic is easier to test when it is a plain function that
-      takes a string and returns two lists, rather than interleaved with
-      Streamlit widgets.
-
-    Returns:
-      valid   : list of clean, upper-cased symbols ending with .NS
-      invalid : list of tokens that failed validation (for error messages)
+    Auto-corrects missing .NS suffixes using validate_ticker_symbol.
     """
-    # Split on comma, strip whitespace, uppercase each token
     tokens = [t.strip().upper() for t in raw_input.split(",") if t.strip()]
 
     valid   = []
     invalid = []
 
     for token in tokens:
-        if not token.endswith(".NS"):
-            invalid.append(token)
+        is_val, clean_sym, _ = validate_ticker_symbol(token)
+        if is_val:
+            valid.append(clean_sym)
         else:
-            valid.append(token)
+            invalid.append(token)
 
     return valid, invalid
 
@@ -98,27 +92,6 @@ def compute_pct_change_series(df: pd.DataFrame, days: int = 120) -> pd.Series:
     pct = (recent["Close"] / first_close - 1) * 100
     pct.index = pd.to_datetime(recent["Date"])
     return pct
-
-
-def compute_max_drawdown(close_series: pd.Series) -> float:
-    """
-    Computes the maximum drawdown of a price series as a percentage.
-
-    Max drawdown = the largest peak-to-trough decline over the period.
-    Example: if the price peaks at 200 then falls to 150, the drawdown is
-    (200 - 150) / 200 = 25%.
-
-    A higher (more negative) value means a bigger loss from peak.
-    Returned as a negative percentage (e.g. -18.5 means -18.5% drawdown).
-    """
-    # Running maximum up to each point in time (the 'peak so far')
-    running_max = close_series.cummax()
-
-    # Drawdown at each day: how far below the running peak is the price?
-    drawdown = (close_series - running_max) / running_max * 100
-
-    # Max drawdown = the worst (most negative) value
-    return round(float(drawdown.min()), 2)
 
 
 def compute_annualised_volatility(close_series: pd.Series) -> float:

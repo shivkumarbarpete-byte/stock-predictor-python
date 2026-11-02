@@ -19,8 +19,8 @@ IMPORTANT - v3+ models predict the next-day RETURN, not the price:
   any stock price level.
 """
 
-import json
 import time
+from typing import Dict, Any, List, Optional
 
 import joblib
 import numpy as np
@@ -34,16 +34,20 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 try:
     from ml_service.config import (
         FEATURES, MODEL_LR_PATH, MODEL_RF_PATH, MODEL_XGB_PATH,
-        MODEL_LGB_PATH, METRICS_PATH, MODEL_DISPLAY_NAMES,
+        MODEL_LGB_PATH, MODEL_DISPLAY_NAMES,
     )
-    from ml_service.compute_indicators import add_rsi, add_macd, add_bollinger_bands
+    from ml_service.compute_indicators import (
+        add_moving_averages, add_rsi, add_macd, add_bollinger_bands,
+    )
     from ml_service.features import add_scale_free_features, add_sentiment_feature, compute_live_sentiment_score
 except ImportError:
     from config import (
         FEATURES, MODEL_LR_PATH, MODEL_RF_PATH, MODEL_XGB_PATH,
-        MODEL_LGB_PATH, METRICS_PATH, MODEL_DISPLAY_NAMES,
+        MODEL_LGB_PATH, MODEL_DISPLAY_NAMES,
     )
-    from compute_indicators import add_rsi, add_macd, add_bollinger_bands
+    from compute_indicators import (
+        add_moving_averages, add_rsi, add_macd, add_bollinger_bands,
+    )
     from features import add_scale_free_features, add_sentiment_feature, compute_live_sentiment_score
 
 
@@ -116,12 +120,8 @@ def add_indicators(df: pd.DataFrame, symbol: str = "") -> pd.DataFrame:
     """
     df = df.copy()
 
-    # Simple Moving Averages
-    df["SMA20"] = df["Close"].rolling(window=20).mean()
-    df["SMA50"] = df["Close"].rolling(window=50).mean()
-
-    # Exponential Moving Average - recent days count more
-    df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+    # Moving averages (SMA20, SMA50, EMA20, Trend_Signal)
+    df = add_moving_averages(df)
 
     # RSI - momentum indicator (already 0-100, so already scale-free)
     df = add_rsi(df, period=14)

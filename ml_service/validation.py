@@ -13,6 +13,7 @@ Cached with st.cache_data so the Streamlit page stays fast after the first run.
 
 import warnings
 from pathlib import Path
+from typing import Tuple, Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,86 @@ except ImportError:
 
 # Suppress warnings during CV fitting
 warnings.filterwarnings("ignore", category=UserWarning)
+
+
+def validate_ticker_symbol(raw_symbol: str) -> Tuple[bool, str, str]:
+    """
+    Validates and standardizes an NSE stock symbol.
+
+    Args:
+        raw_symbol: User-entered stock ticker (e.g. 'reliance', 'TCS.NS', 'infy')
+
+    Returns:
+        (is_valid, clean_symbol, message):
+          - is_valid: True if symbol is formatted properly for Yahoo Finance
+          - clean_symbol: Upper-cased string ending with .NS (e.g. 'RELIANCE.NS')
+          - message: User-friendly explanation or warning if auto-corrected
+    """
+    if not raw_symbol or not str(raw_symbol).strip():
+        return False, "", "Please enter a valid stock symbol (e.g. RELIANCE.NS, TCS.NS)."
+
+    cleaned = str(raw_symbol).strip().upper()
+
+    # Strip currency or dollar signs if accidentally pasted
+    cleaned = cleaned.replace("$", "").replace("₹", "").strip()
+
+    # Automatically add .NS suffix if user forgot it
+    if not cleaned.endswith(".NS") and not cleaned.endswith(".BO"):
+        cleaned_with_suffix = f"{cleaned}.NS"
+        return True, cleaned_with_suffix, f"Auto-appended '.NS' suffix: `{cleaned_with_suffix}`."
+
+    # Verify no illegal characters (alphanumeric, dot, dash only)
+    valid_chars = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+    if not set(cleaned).issubset(valid_chars):
+        return False, cleaned, f"Symbol '{cleaned}' contains invalid characters."
+
+    return True, cleaned, ""
+
+
+def safe_fetch_stock_summary(symbol: str) -> Optional[Dict[str, Any]]:
+    """
+    Safely fetches live stats and next-day prediction for a single ticker.
+    Gracefully returns None on network error or invalid ticker without crashing.
+    """
+    try:
+        try:
+            from ml_service.stock_utils import predict_next_close
+        except ImportError:
+            from stock_utils import predict_next_close
+
+        pred = predict_next_close(symbol, model_name="lr")
+        ind = pred.get("indicators", {})
+
+        sma20 = ind.get("SMA20", 0.0)
+        sma50 = ind.get("SMA50", 0.0)
+        rsi = ind.get("RSI", 50.0)
+
+        # Trend & RSI status
+        trend = "Bullish (SMA20 > SMA50)" if sma20 > sma50 else "Bearish (SMA20 < SMA50)"
+        if rsi > 70:
+            rsi_status = "🔴 Overbought"
+        elif rsi < 30:
+            rsi_status = "🟢 Oversold"
+        else:
+            rsi_status = "⚪ Neutral"
+
+        return {
+            "symbol": symbol.upper(),
+            "last_date": pred.get("last_date", "N/A"),
+            "current_close": pred.get("last_close", 0.0),
+            "predicted_close": pred.get("predicted_close", 0.0),
+            "predicted_change": pred.get("change", 0.0),
+            "predicted_change_pct": pred.get("change_percent", 0.0),
+            "direction": pred.get("direction", "UP"),
+            "sentiment_score": pred.get("sentiment_score", 0.0),
+            "rsi": rsi,
+            "rsi_status": rsi_status,
+            "trend": trend,
+            "sma20": sma20,
+            "sma50": sma50,
+        }
+    except Exception:
+        return None
 
 
 @cache_decorator
@@ -115,14 +196,17 @@ def run_walk_forward_validation(n_splits: int = 5) -> pd.DataFrame:
         # 5. LightGBM (if available)
         lgb_mae, lgb_dir = None, None
         if _HAS_LGB:
-            lgb = LGBMRegressor(
-                n_estimators=200, max_depth=7, learning_rate=0.05,
-                random_state=42, verbose=-1,
-            )
-            lgb.fit(X_train, y_train)
-            lgb_pred = lgb.predict(X_test)
-            lgb_mae = float(mean_absolute_error(y_test, lgb_pred))
-            lgb_dir = float(np.mean((lgb_pred > 0) == (y_test > 0)) * 100)
+            try:
+                lgb = LGBMRegressor(
+                    n_estimators=200, max_depth=7, learning_rate=0.05,
+                    random_state=42, verbose=-1,
+                )
+                lgb.fit(X_train, y_train)
+                lgb_pred = lgb.predict(X_test)
+                lgb_mae = float(mean_absolute_error(y_test, lgb_pred))
+                lgb_dir = float(np.mean((lgb_pred > 0) == (y_test > 0)) * 100)
+            except Exception:
+                pass  # LightGBM can fail on some platforms; skip gracefully
 
         test_dates = ""
         if "Date" in test_df.columns:

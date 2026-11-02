@@ -22,6 +22,7 @@ from ml_service.stock_utils import (
     get_history_with_predictions, predict_next_close, get_available_models,
 )
 from ml_service.config import MODEL_DISPLAY_NAMES
+from ml_service.validation import validate_ticker_symbol
 from ml_service.news_sentiment import analyze_news_sentiment
 from ml_service.risk_reward import render_risk_reward_widget
 from ml_service.pdf_report import generate_dashboard_pdf
@@ -116,30 +117,30 @@ if (st.session_state.model_name_used is not None
 # ──────────────────────────────────────────────────────────────────────────────
 
 if fetch_clicked:
-
-    if not symbol_input.endswith(".NS"):
-        st.error(
-            "❌ Symbol must end with **.NS** (e.g. RELIANCE.NS, TCS.NS). "
-            "This tool supports NSE India stocks only."
-        )
+    is_valid, clean_sym, val_msg = validate_ticker_symbol(symbol_input)
+    if not is_valid:
+        st.error(f"❌ {val_msg}")
     else:
-        with st.spinner(f"Fetching **{symbol_input}** using **{model_choice}** and analyzing news sentiment… (a few seconds)"):
+        if val_msg:
+            st.info(f"💡 {val_msg}")
+
+        with st.spinner(f"Fetching **{clean_sym}** using **{model_choice}** and analyzing news sentiment… (a few seconds)"):
             try:
                 # get_history_with_predictions() -> list of dicts for the chart
                 chart_data = get_history_with_predictions(
-                    symbol_input, days=120, model_name=model_name
+                    clean_sym, days=120, model_name=model_name
                 )
                 # predict_next_close() -> single prediction dict with metrics
-                prediction = predict_next_close(symbol_input, model_name=model_name)
+                prediction = predict_next_close(clean_sym, model_name=model_name)
 
                 # analyze_news_sentiment() -> fetches recent headlines & classifies sentiment
-                sentiment_data = analyze_news_sentiment(symbol_input)
+                sentiment_data = analyze_news_sentiment(clean_sym)
 
                 # Store in session_state so results survive the next re-run
                 st.session_state.chart_data       = chart_data
                 st.session_state.prediction       = prediction
                 st.session_state.sentiment_data   = sentiment_data
-                st.session_state.current_symbol   = symbol_input
+                st.session_state.current_symbol   = clean_sym
                 st.session_state.model_name_used  = model_name
                 st.session_state.risk_reward_data = None
 
@@ -295,17 +296,28 @@ if st.session_state.chart_data is not None and st.session_state.prediction is no
     st.divider()
 
     # ── Plotly chart ─────────────────────────────────────────────────────────
-    chart_style = st.radio(
-        label="Chart style",
-        options=["Line", "Candlestick"],
-        index=0,
-        horizontal=True,
-        key="chart_type_choice",
-        help="Line shows only the close price. Candlestick shows open, high, low and close for each day.",
-    )
+    col_c1, col_c2 = st.columns([3, 1])
+    with col_c1:
+        chart_style = st.radio(
+            label="Chart style",
+            options=["Line", "Candlestick"],
+            index=0,
+            horizontal=True,
+            key="chart_type_choice",
+            help="Line shows only the close price. Candlestick shows open, high, low and close for each day.",
+        )
+    with col_c2:
+        show_slider = st.checkbox("Show Range Slider", value=False, help="Enable bottom mini-timeline slider for panning.")
+
     chart_type = "candle" if chart_style == "Candlestick" else "line"
 
-    fig = build_chart(st.session_state.chart_data, symbol, chart_type=chart_type)
+    fig = build_chart(
+        st.session_state.chart_data,
+        symbol,
+        chart_type=chart_type,
+        rmse=rmse,
+        show_rangeslider=show_slider,
+    )
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Technical Indicators expander ────────────────────────────────────────

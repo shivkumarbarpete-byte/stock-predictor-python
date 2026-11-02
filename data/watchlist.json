@@ -1,4 +1,12 @@
 [
-  "RELIANCE.NS",
-  "TCS.NS"
+  {
+    "symbol": "RELIANCE.NS",
+    "shares": 0,
+    "buy_price": 0.0
+  },
+  {
+    "symbol": "TCS.NS",
+    "shares": 0,
+    "buy_price": 0.0
+  }
 ]

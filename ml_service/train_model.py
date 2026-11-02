@@ -373,38 +373,40 @@ if __name__ == "__main__":
     # ── Model 5: LightGBM ───────────────────────────────────────────────────
     if _HAS_LGB:
         print("\n[7] Training LightGBM ...")
-        lgb_model = LGBMRegressor(
-            n_estimators=300,
-            max_depth=7,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=0.1,
-            reg_lambda=1.0,
-            min_child_samples=5,
-            random_state=42,
-            verbose=-1,
-        )
-        # Use a validation split for early stopping to prevent overfitting
-        val_split = int(len(X_train) * 0.85)
-        X_tr, X_val = X_train[:val_split], X_train[val_split:]
-        y_tr, y_val = y_train[:val_split], y_train[val_split:]
+        try:
+            lgb_model = LGBMRegressor(
+                n_estimators=300,
+                max_depth=7,
+                learning_rate=0.05,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_alpha=0.1,
+                reg_lambda=1.0,
+                min_child_samples=5,
+                random_state=42,
+                verbose=-1,
+            )
+            # Use a validation split for early stopping to prevent overfitting
+            val_split = int(len(X_train) * 0.85)
+            X_tr, X_val = X_train[:val_split], X_train[val_split:]
+            y_tr, y_val = y_train[:val_split], y_train[val_split:]
 
-        lgb_model.fit(
-            X_tr, y_tr,
-            eval_set=[(X_val, y_val)],
-            callbacks=[],  # LightGBM handles early stopping internally
-        )
-        lgb_ret_pred = lgb_model.predict(X_test)
-        lgb_pred = close_test * (1 + lgb_ret_pred)
-        lgb_metrics = compute_metrics(y_test_price, lgb_pred)
-        lgb_extra = compute_return_metrics(y_test_ret, lgb_ret_pred)
-        print(f"  RMSE={lgb_metrics['rmse']:.2f}  MAE={lgb_metrics['mae']:.2f}  R²={lgb_metrics['r2']:.4f}")
+            # LightGBM API: try eval_set first (works in most versions)
+            lgb_model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)])
 
-        models_list.append({"name": "LightGBM", "key": "lgbm", **lgb_metrics})
-        extra_metrics["lgbm"] = lgb_extra
-        chart_preds["LightGBM"] = lgb_pred
-        trained_models["lgbm"] = lgb_model
+            lgb_ret_pred = lgb_model.predict(X_test)
+            lgb_pred = close_test * (1 + lgb_ret_pred)
+            lgb_metrics = compute_metrics(y_test_price, lgb_pred)
+            lgb_extra = compute_return_metrics(y_test_ret, lgb_ret_pred)
+            print(f"  RMSE={lgb_metrics['rmse']:.2f}  MAE={lgb_metrics['mae']:.2f}  R²={lgb_metrics['r2']:.4f}")
+
+            models_list.append({"name": "LightGBM", "key": "lgbm", **lgb_metrics})
+            extra_metrics["lgbm"] = lgb_extra
+            chart_preds["LightGBM"] = lgb_pred
+            trained_models["lgbm"] = lgb_model
+        except Exception as e:
+            print(f"  WARNING: LightGBM training failed: {e}")
+            print("  Continuing without LightGBM...")
     else:
         print("\n[7] Skipping LightGBM (not installed)")
 

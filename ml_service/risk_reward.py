@@ -13,7 +13,131 @@ Provides:
 """
 
 from typing import Dict, List, Optional
+import numpy as np
+import pandas as pd
 import streamlit as st
+
+
+def compute_drawdown_series(equity_series: pd.Series) -> pd.Series:
+    """
+    Computes percentage drawdown from running peak for an equity or price series.
+    Returns a pandas Series of percentage values (e.g., -5.2 for a 5.2% drawdown).
+    """
+    if len(equity_series) == 0:
+        return pd.Series(dtype=float)
+    running_max = equity_series.cummax()
+    return (equity_series - running_max) / running_max * 100.0
+
+
+def compute_max_drawdown(series: pd.Series) -> float:
+    """
+    Computes the maximum peak-to-trough drawdown percentage for any series.
+    Returns a rounded float (e.g., -14.25).
+    """
+    if len(series) == 0:
+        return 0.0
+    dd = compute_drawdown_series(series)
+    return round(float(dd.min()), 2)
+
+
+def compute_trading_metrics(
+    daily_returns: pd.Series,
+    equity_series: pd.Series,
+    trade_events: Optional[List[Dict]] = None,
+    risk_free_rate: float = 0.06,  # 6% per annum (typical RBI repo / risk-free benchmark)
+) -> Dict[str, float]:
+    """
+    Computes institutional trading performance & risk metrics:
+      - Sharpe Ratio (annualized)
+      - Sortino Ratio (annualized downside risk)
+      - Maximum Drawdown (MDD %)
+      - Win / Loss Ratio (Avg Win / Avg Loss and Win Count / Loss Count)
+      - Profit Factor (Gross Profits / Gross Losses)
+
+    Robust against edge cases such as zero volatility, zero downside deviation,
+    or zero losing trades.
+    """
+    if len(daily_returns) == 0:
+        return {
+            "sharpe_ratio": 0.0,
+            "sortino_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "win_loss_ratio": 0.0,
+            "profit_factor": 0.0,
+            "avg_win": 0.0,
+            "avg_loss": 0.0,
+            "win_count": 0,
+            "loss_count": 0,
+        }
+
+    # Daily risk-free rate assuming 252 trading sessions per year
+    rf_daily = (1.0 + risk_free_rate) ** (1.0 / 252.0) - 1.0
+    excess_returns = daily_returns - rf_daily
+
+    # 1. Annualized Sharpe Ratio
+    ret_std = float(daily_returns.std())
+    if ret_std > 1e-8:
+        sharpe_ratio = float((excess_returns.mean() / ret_std) * np.sqrt(252))
+    else:
+        sharpe_ratio = 0.0
+
+    # 2. Annualized Sortino Ratio (downside deviation relative to risk-free rate)
+    downside_diff = np.minimum(excess_returns, 0.0)
+    downside_variance = np.mean(downside_diff ** 2)
+    downside_std = float(np.sqrt(downside_variance))
+
+    if downside_std > 1e-8:
+        sortino_ratio = float((excess_returns.mean() / downside_std) * np.sqrt(252))
+    else:
+        # If no negative days below risk-free rate, Sortino is exceptionally high or 0 if mean <= 0
+        sortino_ratio = 10.0 if excess_returns.mean() > 0 else 0.0
+
+    # 3. Maximum Drawdown (MDD %)
+    max_drawdown = compute_max_drawdown(equity_series)
+
+    # 4. Win/Loss metrics from trade events (or daily returns fallback)
+    if trade_events and len(trade_events) > 0:
+        wins = [t["trade_return"] for t in trade_events if t["trade_return"] > 0]
+        losses = [abs(t["trade_return"]) for t in trade_events if t["trade_return"] < 0]
+    else:
+        wins = [r for r in daily_returns if r > 0]
+        losses = [abs(r) for r in daily_returns if r < 0]
+
+    win_count = len(wins)
+    loss_count = len(losses)
+    avg_win = float(np.mean(wins)) if win_count > 0 else 0.0
+    avg_loss = float(np.mean(losses)) if loss_count > 0 else 0.0
+
+    # Win / Loss Ratio: Average Win / Average Loss
+    if avg_loss > 1e-8:
+        win_loss_ratio = float(avg_win / avg_loss)
+    elif avg_win > 0:
+        win_loss_ratio = 10.0  # Perfect win record
+    else:
+        win_loss_ratio = 0.0
+
+    # Profit Factor: Gross Profits / Gross Losses
+    total_gains = float(np.sum(wins)) if win_count > 0 else 0.0
+    total_losses = float(np.sum(losses)) if loss_count > 0 else 0.0
+
+    if total_losses > 1e-8:
+        profit_factor = float(total_gains / total_losses)
+    elif total_gains > 0:
+        profit_factor = 10.0
+    else:
+        profit_factor = 0.0
+
+    return {
+        "sharpe_ratio": round(sharpe_ratio, 2),
+        "sortino_ratio": round(sortino_ratio, 2),
+        "max_drawdown": round(max_drawdown, 2),
+        "win_loss_ratio": round(win_loss_ratio, 2),
+        "profit_factor": round(profit_factor, 2),
+        "avg_win_pct": round(avg_win * 100.0, 2),
+        "avg_loss_pct": round(avg_loss * 100.0, 2),
+        "win_count": win_count,
+        "loss_count": loss_count,
+    }
 
 
 def calculate_risk_reward(

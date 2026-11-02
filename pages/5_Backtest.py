@@ -1,17 +1,19 @@
 """
 pages/5_Backtest.py
 --------------------
-Backtest a simple ML-guided Long/Flat trading strategy:
-  - If predicted next-day return > 0: hold the stock.
-  - Else: stay in cash (0% return).
+Backtest ML-guided trading strategies with dynamic Stop-Loss and Take-Profit rules.
 
 Features:
-  - Configurable symbol, model choice (Linear Regression or Random Forest),
-    evaluation period (6mo, 1y, 2y), and transaction cost (slippage + brokerage).
+  - Configurable symbol, model choice (Linear Regression, Random Forest, XGBoost, LightGBM),
+    evaluation period (6mo, 1y, 2y), and transaction cost (brokerage & slippage).
+  - Stop-Loss & Take-Profit targets: protects downside and locks in gains dynamically.
+  - Advanced Trading Metrics:
+      * Sharpe Ratio (annualized vs 6% risk-free rate)
+      * Sortino Ratio (downside risk deviation)
+      * Maximum Drawdown (peak-to-trough drop)
+      * Win/Loss Ratio & Profit Factor
   - Normalized equity curve comparison: Strategy vs Buy-and-Hold benchmark.
-  - Comprehensive performance metrics table (Total Return, Annualised Return / CAGR,
-    Max Drawdown, Trades, Win Rate).
-  - Clear, honest disclaimer on train/test data leakage for RELIANCE.NS and past performance.
+  - Detailed Trade Log with Exit Triggers (Stop Loss, Take Profit, Signal Flip).
 """
 
 import pandas as pd
@@ -19,6 +21,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from ml_service.backtest import run_backtest
+from ml_service.stock_utils import get_available_models
+from ml_service.config import MODEL_DISPLAY_NAMES
 from ml_service.pdf_report import generate_backtest_pdf
 from ml_service.risk_reward import render_risk_reward_widget
 
@@ -29,10 +33,10 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("📈 Strategy Backtest")
+st.title("📈 Strategy Backtest & Risk Management")
 st.caption(
-    "Test a simple systematic trading rule powered by the ML model: "
-    "**Long when predicted return > 0, Cash otherwise.** Evaluated without lookahead bias."
+    "Simulate systematic ML trading rules with protective Stop-Loss and Take-Profit mechanisms. "
+    "Evaluated chronologically without lookahead bias."
 )
 
 st.divider()
@@ -49,13 +53,20 @@ with st.sidebar:
         help="Must be a valid Yahoo Finance ticker ending in .NS (e.g. RELIANCE.NS, TCS.NS, INFY.NS)",
     ).strip().upper()
 
+    # Dynamic model options
+    avail_models = get_available_models()
+    if not avail_models:
+        avail_models = ["lr", "rf", "xgb", "lgbm"]
+
+    model_labels = [f"{MODEL_DISPLAY_NAMES.get(k, k)} ({k})" for k in avail_models]
     model_choice = st.selectbox(
         "Model",
-        options=["Linear Regression (lr)", "Random Forest (rf)"],
+        options=model_labels,
         index=0,
         help="Choose which trained ML model generates next-day return predictions.",
     )
-    model_key = "lr" if "lr" in model_choice else "rf"
+    # Extract short key (e.g. 'lr', 'rf', 'xgb', 'lgbm')
+    model_key = model_choice.split("(")[-1].replace(")", "").strip()
 
     period_choice = st.selectbox(
         "Backtest Period",
@@ -84,6 +95,37 @@ with st.sidebar:
         help="Starting portfolio cash in Rupees.",
     )
 
+    st.markdown("---")
+    st.subheader("🛡️ Risk Rules (SL / TP)")
+
+    enable_sl = st.checkbox("Enable Stop-Loss", value=True, help="Exit trade if price drops below entry by X%")
+    if enable_sl:
+        sl_input = st.slider(
+            "Stop-Loss Threshold (%)",
+            min_value=0.5,
+            max_value=15.0,
+            value=3.0,
+            step=0.5,
+            help="Maximum acceptable loss per trade from entry price.",
+        )
+        stop_loss_val = sl_input / 100.0
+    else:
+        stop_loss_val = None
+
+    enable_tp = st.checkbox("Enable Take-Profit", value=True, help="Exit trade when price reaches target of Y%")
+    if enable_tp:
+        tp_input = st.slider(
+            "Take-Profit Target (%)",
+            min_value=1.0,
+            max_value=30.0,
+            value=6.0,
+            step=0.5,
+            help="Target profit gain per trade from entry price.",
+        )
+        take_profit_val = tp_input / 100.0
+    else:
+        take_profit_val = None
+
     run_btn = st.button("🚀 Run Backtest", use_container_width=True, type="primary")
 
 # Default or active state
@@ -103,6 +145,8 @@ if run_btn or st.session_state.backtest_data is None:
                     period=period_choice,
                     transaction_cost=cost_pct / 100.0,
                     initial_capital=initial_capital,
+                    stop_loss_pct=stop_loss_val,
+                    take_profit_pct=take_profit_val,
                 )
                 st.session_state.backtest_data = bt_results
             except Exception as e:
@@ -121,12 +165,18 @@ if data:
 
     # ── Summary banner ──
     st.subheader(f"📊 Results for {data['symbol']} ({data['start_date']} to {data['end_date']})")
+    
+    sl_badge = f"🛑 Stop-Loss: **{data['stop_loss_pct']:.1f}%**" if data['stop_loss_pct'] else "🛑 Stop-Loss: *Disabled*"
+    tp_badge = f"🎯 Take-Profit: **{data['take_profit_pct']:.1f}%**" if data['take_profit_pct'] else "🎯 Take-Profit: *Disabled*"
+    model_disp = MODEL_DISPLAY_NAMES.get(data['model_name'], data['model_name'])
+
     st.caption(
-        f"Evaluated over **{data['num_days']} trading days** with **{data['transaction_cost_pct']:.2f}%** "
-        f"transaction friction using **{model_choice.split(' ')[0]} {model_choice.split(' ')[1]}**."
+        f"Evaluated over **{data['num_days']} trading days** with **{data['transaction_cost_pct']:.2f}%** friction "
+        f"using **{model_disp}**. Configuration: {sl_badge} · {tp_badge}"
     )
 
-    # ── KPI cards ──
+    # ── Primary KPI Cards ──
+    st.markdown("#### 🏆 Core Performance Highlights")
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
         st.metric(
@@ -136,27 +186,83 @@ if data:
         )
     with k2:
         st.metric(
-            "Buy & Hold Return",
-            f"{b_m['total_return']:+.2f}%",
+            "Annualized CAGR",
+            f"{s_m['annualised_return']:+.2f}%",
+            delta=f"{s_m['annualised_return'] - b_m['annualised_return']:+.2f}% vs B&H",
         )
     with k3:
         st.metric(
-            "Strategy Max DD",
-            f"{s_m['max_drawdown']:.2f}%",
-            delta=f"{s_m['max_drawdown'] - b_m['max_drawdown']:+.2f}% vs B&H",
-            delta_color="normal" if s_m['max_drawdown'] >= b_m['max_drawdown'] else "inverse",
+            "Buy & Hold Return",
+            f"{b_m['total_return']:+.2f}%",
+            delta=f"CAGR: {b_m['annualised_return']:+.2f}%",
+            delta_color="off",
         )
     with k4:
         st.metric(
-            "Trades Executed",
-            f"{s_m['trades']}",
-            help="Total position changes (0->1 entries and 1->0 exits).",
+            "Win Rate",
+            f"{s_m['win_rate']:.1f}%",
+            delta=f"{s_m['win_count']} Wins / {s_m['loss_count']} Losses",
+            delta_color="off",
+            help="% of completed trades with positive net profit after transaction costs.",
         )
     with k5:
         st.metric(
-            "Win Rate",
-            f"{s_m['win_rate']:.1f}%",
-            help="% of completed trades with positive net profit after transaction costs.",
+            "Ending Portfolio",
+            f"₹{s_m['final_equity']:,.2f}",
+            delta=f"₹{s_m['final_equity'] - data['initial_capital']:+,.2f} P&L",
+        )
+
+    # ── Advanced Institutional Trading Metrics ──
+    st.markdown("#### 🔬 Institutional Risk & Trading Metrics")
+    r1, r2, r3, r4, r5 = st.columns(5)
+
+    with r1:
+        st.metric(
+            "Sharpe Ratio (Rf=6%)",
+            f"{s_m['sharpe_ratio']:.2f}",
+            delta=f"{s_m['sharpe_ratio'] - b_m['sharpe_ratio']:+.2f} vs B&H ({b_m['sharpe_ratio']:.2f})",
+            help=(
+                "Annualized risk-adjusted excess return per unit of total risk. "
+                "Higher is better (>1.0 is considered good, >2.0 is very good)."
+            ),
+        )
+
+    with r2:
+        st.metric(
+            "Sortino Ratio",
+            f"{s_m['sortino_ratio']:.2f}",
+            delta=f"{s_m['sortino_ratio'] - b_m['sortino_ratio']:+.2f} vs B&H ({b_m['sortino_ratio']:.2f})",
+            help=(
+                "Focuses strictly on harmful downside risk instead of total volatility. "
+                "Only penalizes negative excess volatility."
+            ),
+        )
+
+    with r3:
+        st.metric(
+            "Maximum Drawdown",
+            f"{s_m['max_drawdown']:.2f}%",
+            delta=f"{s_m['max_drawdown'] - b_m['max_drawdown']:+.2f}% vs B&H ({b_m['max_drawdown']:.2f}%)",
+            delta_color="normal" if s_m['max_drawdown'] >= b_m['max_drawdown'] else "inverse",
+            help="Largest peak-to-trough portfolio decline. Closer to 0% is safer.",
+        )
+
+    with r4:
+        st.metric(
+            "Win / Loss Ratio",
+            f"{s_m['win_loss_ratio']:.2f}x",
+            delta=f"Avg Win: {s_m['avg_win_pct']:+.1f}% | Avg Loss: -{s_m['avg_loss_pct']:.1f}%",
+            delta_color="off",
+            help="Average profit on winning trades divided by average loss on losing trades. >1.0 means winners outweigh losers.",
+        )
+
+    with r5:
+        st.metric(
+            "Profit Factor",
+            f"{s_m['profit_factor']:.2f}",
+            delta="Gross Profit / Gross Loss",
+            delta_color="off",
+            help="Total gross profits divided by total gross losses. Values above 1.5 indicate robust edge.",
         )
 
     st.markdown("")
@@ -168,7 +274,7 @@ if data:
         x=daily_df["Date"],
         y=daily_df["Strategy_Equity"],
         mode="lines",
-        name="ML Strategy (Long / Cash)",
+        name=f"ML Strategy ({model_disp})",
         line=dict(color="#2563EB", width=2.5),
         hovertemplate="Strategy: ₹%{y:,.0f}<extra></extra>",
     ))
@@ -195,11 +301,11 @@ if data:
     st.plotly_chart(fig_equity, use_container_width=True)
 
     # ── Comparison Table ──
-    st.subheader("📋 Performance Comparison Table")
+    st.subheader("📋 Comprehensive Performance & Risk Table")
 
     metrics_table = pd.DataFrame([
         {
-            "Metric": "Total Return (%)",
+            "Metric": "Total Net Return (%)",
             "ML Strategy": f"{s_m['total_return']:+.2f}%",
             "Buy & Hold": f"{b_m['total_return']:+.2f}%",
             "Difference": f"{s_m['total_return'] - b_m['total_return']:+.2f}%",
@@ -211,10 +317,40 @@ if data:
             "Difference": f"{s_m['annualised_return'] - b_m['annualised_return']:+.2f}%",
         },
         {
+            "Metric": "Sharpe Ratio (Rf = 6%)",
+            "ML Strategy": f"{s_m['sharpe_ratio']:.2f}",
+            "Buy & Hold": f"{b_m['sharpe_ratio']:.2f}",
+            "Difference": f"{s_m['sharpe_ratio'] - b_m['sharpe_ratio']:+.2f}",
+        },
+        {
+            "Metric": "Sortino Ratio (Downside Deviation)",
+            "ML Strategy": f"{s_m['sortino_ratio']:.2f}",
+            "Buy & Hold": f"{b_m['sortino_ratio']:.2f}",
+            "Difference": f"{s_m['sortino_ratio'] - b_m['sortino_ratio']:+.2f}",
+        },
+        {
             "Metric": "Maximum Drawdown (%)",
             "ML Strategy": f"{s_m['max_drawdown']:.2f}%",
             "Buy & Hold": f"{b_m['max_drawdown']:.2f}%",
             "Difference": f"{s_m['max_drawdown'] - b_m['max_drawdown']:+.2f}%",
+        },
+        {
+            "Metric": "Profit Factor (Gross Win / Gross Loss)",
+            "ML Strategy": f"{s_m['profit_factor']:.2f}",
+            "Buy & Hold": f"{b_m['profit_factor']:.2f}",
+            "Difference": f"{s_m['profit_factor'] - b_m['profit_factor']:+.2f}",
+        },
+        {
+            "Metric": "Win / Loss Ratio (Avg Win / Avg Loss)",
+            "ML Strategy": f"{s_m['win_loss_ratio']:.2f}x ({s_m['avg_win_pct']:+.1f}% / -{s_m['avg_loss_pct']:.1f}%)",
+            "Buy & Hold": "—",
+            "Difference": "—",
+        },
+        {
+            "Metric": "Trade Win Rate (%)",
+            "ML Strategy": f"{s_m['win_rate']:.1f}% ({s_m['win_count']}W / {s_m['loss_count']}L)",
+            "Buy & Hold": f"{b_m['win_rate']:.1f}% (up days)",
+            "Difference": f"{s_m['win_rate'] - b_m['win_rate']:+.1f}%",
         },
         {
             "Metric": "Number of Trades (Rebalances)",
@@ -229,12 +365,6 @@ if data:
             "Difference": f"{s_m['completed_trades'] - 1:+d}",
         },
         {
-            "Metric": "Win Rate (%)",
-            "ML Strategy": f"{s_m['win_rate']:.1f}%",
-            "Buy & Hold": f"{b_m['win_rate']:.1f}% (up days)",
-            "Difference": f"{s_m['win_rate'] - b_m['win_rate']:+.1f}%",
-        },
-        {
             "Metric": "Final Capital (₹)",
             "ML Strategy": f"₹{s_m['final_equity']:,.2f}",
             "Buy & Hold": f"₹{b_m['final_equity']:,.2f}",
@@ -246,7 +376,6 @@ if data:
 
     # ── Daily positions & drawdown expander ──
     with st.expander("🔍 View Daily Trade Signals & Drawdown Curve"):
-        # Plot Drawdown
         fig_dd = go.Figure()
         fig_dd.add_trace(go.Scatter(
             x=daily_df["Date"],
@@ -275,7 +404,7 @@ if data:
         )
         st.plotly_chart(fig_dd, use_container_width=True)
 
-        # Show trade log table if any
+        # Show trade log table with exit reasons
         if data["trade_events"]:
             st.markdown("**Completed Trade Log:**")
             trades_df = pd.DataFrame(data["trade_events"])
@@ -285,7 +414,20 @@ if data:
             trades_df["exit_price"] = trades_df["exit_price"].apply(lambda v: f"₹{v:,.2f}")
             trades_df["trade_return"] = trades_df["trade_return"].apply(lambda v: f"{v*100:+.2f}%")
             trades_df["result"] = trades_df["is_win"].apply(lambda w: "🟢 Profit" if w else "🔴 Loss")
-            trades_df = trades_df.rename(columns={
+
+            # Format exit trigger with icons
+            def _format_exit_reason(reason):
+                if reason == "Stop Loss":
+                    return "🛑 Stop Loss Hit"
+                elif reason == "Take Profit":
+                    return "🎯 Take Profit Hit"
+                elif reason == "Signal Flip":
+                    return "🔄 Signal Flip (Model)"
+                return "🏁 End of Period"
+
+            trades_df["Exit Trigger"] = trades_df.get("exit_reason", "Signal Flip").apply(_format_exit_reason)
+
+            trades_display = trades_df.rename(columns={
                 "entry_date": "Entry Date",
                 "exit_date": "Exit Date",
                 "entry_price": "Entry Price",
@@ -293,8 +435,9 @@ if data:
                 "holding_days": "Holding Days",
                 "trade_return": "Net Return",
                 "result": "Outcome",
-            })[["Entry Date", "Exit Date", "Entry Price", "Exit Price", "Holding Days", "Net Return", "Outcome"]]
-            st.dataframe(trades_df, use_container_width=True, hide_index=True)
+            })[["Entry Date", "Exit Date", "Entry Price", "Exit Price", "Holding Days", "Net Return", "Outcome", "Exit Trigger"]]
+
+            st.dataframe(trades_display, use_container_width=True, hide_index=True)
 
     st.divider()
 
@@ -306,7 +449,6 @@ if data:
     latest_pred_close = latest_close * (1.0 + last_pred_ret)
     daily_vol = float(daily_df["Asset_Return"].std()) * latest_close if len(daily_df) > 5 else latest_close * 0.02
 
-    # Build lightweight chart_data list for swing levels from daily_df
     bt_chart_data = [
         {"low": float(row["Close"]) * 0.99, "high": float(row["Close"]) * 1.01}
         for _, row in daily_df.tail(20).iterrows()
@@ -380,8 +522,7 @@ if data:
 
     st.warning(
         "**1. Training / Testing Data Leakage Notice (RELIANCE.NS):**\n\n"
-        "The model weights stored in `linear_regression_model_v3.pkl` and `random_forest_model_v3.pkl` "
-        "were trained on historical data of **RELIANCE.NS** from 2022 to mid-2024. "
+        "The model weights stored in the `.pkl` files were trained on historical data of **RELIANCE.NS** from 2022 to mid-2024. "
         "If you run a backtest on **RELIANCE.NS** covering that period, the model is evaluating on "
         "**in-sample data it has already seen during training** (lookahead/leakage contamination). "
         "To evaluate real out-of-sample performance, test on other NSE stocks (e.g. `TCS.NS`, `INFY.NS`, `HDFCBANK.NS`) "
@@ -392,8 +533,8 @@ if data:
         "**2. Past Performance is Not Indicative of Future Returns:**\n\n"
         "- **Transaction costs matter:** Frequent trading (switching between cash and long positions) "
         "accumulates transaction costs and exchange turnover fees, rapidly eating away marginal alpha.\n"
-        "- **Execution assumptions:** This backtest assumes executions at daily closing prices with standard "
-        "slippage. Real-world slippage on volatile market days can be significantly higher.\n"
+        "- **Stop-Loss / Take-Profit Slippage:** Real-world gap openings can cause executions below the stop-loss price. "
+        "Intraday prices are checked against daily high and low extremes.\n"
         "- **Survivorship & regime changes:** Historical regimes with strong bull trends will show different "
         "long/flat dynamics compared to choppy sideways or bear markets."
     )

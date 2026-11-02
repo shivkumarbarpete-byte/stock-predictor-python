@@ -29,19 +29,61 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-def build_chart(history_data: list, symbol: str, chart_type: str = "line") -> go.Figure:
-    """
-    Builds and returns a Plotly figure for one stock.
+from typing import Optional, List, Dict
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-    history_data : list of dicts from get_history_with_predictions()
-                   Each dict has keys: date, open, high, low, actual,
-                   predicted, sma20, sma50
-    symbol       : stock ticker (e.g. "RELIANCE.NS") - used in the chart title
-    chart_type   : "line" (default) or "candle"
+
+def build_chart(
+    history_data: list,
+    symbol: str,
+    chart_type: str = "line",
+    rmse: Optional[float] = None,
+    show_rangeslider: bool = False,
+) -> go.Figure:
+    """
+    Builds and returns an interactive Plotly figure for one stock.
+
+    Features:
+      - Line or Candlestick view with color-coded bull/bear bodies
+      - Actual close price, model predicted price, SMA20, SMA50
+      - Optional prediction confidence ribbon (+/- RMSE)
+      - Interactive range selector buttons (1M, 3M, 6M, YTD, ALL)
+      - Crosshair spikes and unified hover card
     """
     df = pd.DataFrame(history_data)
+    if df.empty:
+        return go.Figure()
 
     fig = go.Figure()
+
+    # --- Confidence Ribbon around Prediction (+/- RMSE) if provided ---
+    if rmse is not None and rmse > 0 and "predicted" in df.columns:
+        valid_preds = df["predicted"].dropna()
+        if not valid_preds.empty:
+            upper_bound = df["predicted"] + rmse
+            lower_bound = df["predicted"] - rmse
+
+            fig.add_trace(go.Scatter(
+                x=df["date"],
+                y=upper_bound,
+                mode="lines",
+                line=dict(width=0),
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+            fig.add_trace(go.Scatter(
+                x=df["date"],
+                y=lower_bound,
+                mode="lines",
+                line=dict(width=0),
+                fill="tonexty",
+                fillcolor="rgba(245, 158, 11, 0.12)",  # soft amber glow
+                name=f"Prediction Uncertainty (± ₹{rmse:.2f})",
+                hoverinfo="skip",
+            ))
 
     # --- Main price series: line OR candlestick ---
     if chart_type == "candle":
@@ -51,71 +93,101 @@ def build_chart(history_data: list, symbol: str, chart_type: str = "line") -> go
             high=df["high"],
             low=df["low"],
             close=df["actual"],
-            name="Price",
-            increasing_line_color="#22C55E",   # green candle: close > open
-            decreasing_line_color="#EF4444",   # red candle:   close < open
+            name="OHLC Price",
+            increasing_line_color="#16A34A",   # emerald green
+            decreasing_line_color="#DC2626",   # red
         ))
-        title_text = f"{symbol} - Candlestick with Predicted Close (Last 120 days)"
+        title_text = f"<b>{symbol}</b> — Candlestick & Predictions (Last {len(df)} Sessions)"
     else:
         fig.add_trace(go.Scatter(
             x=df["date"],
             y=df["actual"],
             name="Actual Close",
-            line=dict(color="#3B82F6", width=2),   # blue
-            hovertemplate="Date: %{x}<br>Actual: ₹%{y:.2f}<extra></extra>",
+            line=dict(color="#2563EB", width=2.2),   # Tailwind blue-600
+            hovertemplate="Actual Close: <b>₹%{y:,.2f}</b><extra></extra>",
         ))
-        title_text = f"{symbol} - Actual vs Predicted Close Price (Last 120 days)"
+        title_text = f"<b>{symbol}</b> — Actual vs Model Predicted Price (Last {len(df)} Sessions)"
 
-    # --- Predicted Close Price (orange so it stands out on candles) ---
+    # --- Predicted Close Price ---
+    pred_color = "#D97706" if chart_type == "candle" else "#EA580C"
     fig.add_trace(go.Scatter(
         x=df["date"],
         y=df["predicted"],
         name="Predicted Close",
-        line=dict(color="#F59E0B" if chart_type == "candle" else "#EF4444", width=2),
-        hovertemplate="Date: %{x}<br>Predicted: ₹%{y:.2f}<extra></extra>",
+        line=dict(color=pred_color, width=2.0, dash="solid"),
+        hovertemplate="Predicted: <b>₹%{y:,.2f}</b><extra></extra>",
     ))
 
-    # --- SMA20 (green, dashed) ---
-    fig.add_trace(go.Scatter(
-        x=df["date"],
-        y=df["sma20"],
-        name="SMA 20",
-        line=dict(color="#0EA5E9", width=1.5, dash="dash"),
-        hovertemplate="Date: %{x}<br>SMA20: ₹%{y:.2f}<extra></extra>",
-    ))
+    # --- SMA20 (cyan-blue, dashed) ---
+    if "sma20" in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df["date"],
+            y=df["sma20"],
+            name="SMA 20 (Short Trend)",
+            line=dict(color="#0284C7", width=1.5, dash="dash"),
+            hovertemplate="SMA20: ₹%{y:,.2f}<extra></extra>",
+        ))
 
     # --- SMA50 (purple, dashed) ---
-    fig.add_trace(go.Scatter(
-        x=df["date"],
-        y=df["sma50"],
-        name="SMA 50",
-        line=dict(color="#A855F7", width=1.5, dash="dash"),
-        hovertemplate="Date: %{x}<br>SMA50: ₹%{y:.2f}<extra></extra>",
-    ))
+    if "sma50" in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df["date"],
+            y=df["sma50"],
+            name="SMA 50 (Medium Trend)",
+            line=dict(color="#9333EA", width=1.5, dash="dash"),
+            hovertemplate="SMA50: ₹%{y:,.2f}<extra></extra>",
+        ))
 
-    # --- Layout / styling ---
+    # --- Interactive Layout & Range Selector Buttons ---
     fig.update_layout(
-        title=dict(text=title_text, font=dict(size=16)),
+        title=dict(text=title_text, font=dict(size=16, color="#0F172A")),
         xaxis_title="Date",
         yaxis_title="Price (₹)",
         hovermode="x unified",
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.3,
+            y=-0.35,
             xanchor="center",
             x=0.5,
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="#E2E8F0",
+            borderwidth=1,
         ),
         template="plotly_white",
-        height=450,
-        margin=dict(l=40, r=40, t=60, b=80),
-        xaxis_rangeslider_visible=False,   # hide the slider Plotly adds under candlesticks
+        height=480,
+        margin=dict(l=45, r=40, t=60, b=80),
     )
 
-    # Nicer date ticks + skip Saturday/Sunday gaps (market is closed)
+    # Crosshair and Range Selector buttons
     fig.update_xaxes(
         tickformat="%b %Y",
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        showline=True,
+        showgrid=True,
+        gridcolor="#F1F5F9",
         rangebreaks=[dict(bounds=["sat", "mon"])],
+        rangeselector=dict(
+            buttons=list([
+                dict(count=1, label="1M", step="month", stepmode="backward"),
+                dict(count=3, label="3M", step="month", stepmode="backward"),
+                dict(count=6, label="6M", step="month", stepmode="backward"),
+                dict(step="all", label="All"),
+            ]),
+            bgcolor="#F8FAFC",
+            activecolor="#DBEAFE",
+            font=dict(size=11, color="#1E293B"),
+        ),
+        rangeslider_visible=show_rangeslider,
+    )
+
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor="#F1F5F9",
+        showspikes=True,
+        spikemode="across",
     )
 
     return fig
@@ -269,19 +341,24 @@ def build_indicator_chart(history_data: list, symbol: str) -> go.Figure:
             y=-0.18,
             xanchor="center",
             x=0.5,
+            bgcolor="rgba(255, 255, 255, 0.8)",
         ),
-        margin=dict(l=40, r=40, t=60, b=80),
+        margin=dict(l=45, r=40, t=60, b=80),
     )
 
     # y-axis labels
-    fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
-    fig.update_yaxes(title_text="RSI",       row=2, col=1, range=[0, 100])
-    fig.update_yaxes(title_text="MACD",      row=3, col=1)
+    fig.update_yaxes(title_text="Price (₹)", row=1, col=1, showspikes=True, gridcolor="#F1F5F9")
+    fig.update_yaxes(title_text="RSI",       row=2, col=1, range=[0, 100], showspikes=True, gridcolor="#F1F5F9")
+    fig.update_yaxes(title_text="MACD",      row=3, col=1, showspikes=True, gridcolor="#F1F5F9")
 
-    # x-axis: nicer ticks + skip weekend gaps on ALL three panels
+    # x-axis: nicer ticks, crosshair spikes, and skip weekend gaps on ALL three panels
     fig.update_xaxes(
         tickformat="%b %Y",
         rangebreaks=[dict(bounds=["sat", "mon"])],
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        gridcolor="#F1F5F9",
     )
 
     return fig
